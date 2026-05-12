@@ -26,6 +26,10 @@ def load_config() -> dict:
     if parser.has_section("default"):
         encoding = parser["default"].get("encoding", "utf-8")
 
+    file_path: str | None = None
+    if parser.has_section("default"):
+        file_path = parser["default"].get("file") or None
+
     columns: list[str] = []
     if parser.has_section("columns"):
         raw = parser["columns"].get("names", "")
@@ -35,7 +39,7 @@ def load_config() -> dict:
     if parser.has_section("filter"):
         filters = dict(parser["filter"])
 
-    return {"encoding": encoding, "columns": columns, "filters": filters}
+    return {"encoding": encoding, "columns": columns, "filters": filters, "file": file_path}
 
 
 def is_null_like(value: str) -> bool:
@@ -125,11 +129,16 @@ def format_table(headers: list[str], rows: list[list[str]]) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="CSV table viewer with fuzzy column selection")
-    parser.add_argument("file", type=Path, help="path to .csv")
+    parser.add_argument("file", type=Path, nargs="?", help="path to .csv (overrides config.ini)")
     args = parser.parse_args()
 
     cfg = load_config()
-    headers, rows = read_csv(args.file, cfg["encoding"])
+
+    file_path: Path | None = args.file or (Path(cfg["file"]) if cfg["file"] else None)
+    if file_path is None:
+        parser.error("file not specified: pass as argument or set [default] file = ... in config.ini")
+
+    headers, rows = read_csv(file_path, cfg["encoding"])
     rows = apply_filters(headers, rows, cfg["filters"])
     headers, rows = select_columns(headers, rows, cfg["columns"])
     print(format_table(headers, rows))

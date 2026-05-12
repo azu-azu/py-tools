@@ -13,14 +13,21 @@ Display a CSV file as a formatted table, with optional column selection (fuzzy m
 **Usage**
 
 ```bash
+# ファイルを直接指定
 python csv_viewer/csv_filter.py <file.csv>
+
+# config.ini に file を書いておけば引数なしで実行できる
+python csv_viewer/csv_filter.py
 ```
+
+CLI 引数が config.ini より優先される。
 
 **config.ini**
 
 ```ini
 [default]
 encoding = utf-8
+# file = data/sample.csv  # 省略時は CLI 引数が必須
 
 [columns]
 # Columns to display, comma-separated (fuzzy matched against headers)
@@ -33,6 +40,7 @@ status = done
 category =
 ```
 
+- `[default] file` — デフォルトの CSV パス。CLI 引数で上書き可能
 - `[columns]` — omit to show all columns
 - `[filter]` — omit to show all rows; leaving the value blank matches empty/null-like cells
 - Null-like values are displayed as `(null)` in the output
