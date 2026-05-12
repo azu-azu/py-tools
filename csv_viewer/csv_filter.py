@@ -30,6 +30,10 @@ def load_config() -> dict:
     if parser.has_section("default"):
         file_path = parser["default"].get("file") or None
 
+    folder: str | None = None
+    if parser.has_section("default"):
+        folder = parser["default"].get("folder") or None
+
     columns: list[str] = []
     if parser.has_section("columns"):
         raw = parser["columns"].get("names", "")
@@ -39,7 +43,7 @@ def load_config() -> dict:
     if parser.has_section("filter"):
         filters = dict(parser["filter"])
 
-    return {"encoding": encoding, "columns": columns, "filters": filters, "file": file_path}
+    return {"encoding": encoding, "columns": columns, "filters": filters, "file": file_path, "folder": folder}
 
 
 def is_null_like(value: str) -> bool:
@@ -134,9 +138,12 @@ def main() -> None:
 
     cfg = load_config()
 
-    file_path: Path | None = args.file or (Path(cfg["file"]) if cfg["file"] else None)
-    if file_path is None:
+    raw: Path | None = args.file or (Path(cfg["file"]) if cfg["file"] else None)
+    if raw is None:
         parser.error("file not specified: pass as argument or set [default] file = ... in config.ini")
+
+    folder = Path(cfg["folder"]) if cfg["folder"] else None
+    file_path = folder / raw if (folder and raw.parent == Path(".")) else raw
 
     headers, rows = read_csv(file_path, cfg["encoding"])
     rows = apply_filters(headers, rows, cfg["filters"])
