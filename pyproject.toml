@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "py-tools"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["openpyxl"]
+
+[project.scripts]
+csv-view   = "csv_viewer.csv_filter:main"
+excel-view = "excel_viewer.show_table:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["csv_viewer", "excel_viewer", "utils"]

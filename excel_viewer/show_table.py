@@ -7,6 +7,8 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from utils.excel import SheetNotFoundError, resolve_sheet
+
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).parent / "config.ini"
@@ -39,13 +41,11 @@ def read_sheet(
     if not path.exists():
         raise SystemExit(f"file not found: {path}")
     wb = load_workbook(path, read_only=True, data_only=True)
-    if sheet_name and sheet_name not in wb.sheetnames:
+    try:
+        ws = resolve_sheet(wb, sheet_name) if sheet_name else wb.active
+    except SheetNotFoundError as e:
         wb.close()
-        raise SystemExit(
-            f"sheet '{sheet_name}' が見つかりません\n"
-            f"  利用可能: {', '.join(wb.sheetnames)}"
-        )
-    ws = wb[sheet_name] if sheet_name else wb.active
+        raise SystemExit(str(e)) from e
     logger.info("sheet: %s", ws.title)
 
     rows = []
