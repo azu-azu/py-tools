@@ -6,11 +6,12 @@ build-backend = "hatchling.build"
 name = "py-tools"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["openpyxl"]
+dependencies = ["openpyxl", "pandas", "xlsxwriter", "typer"]
 
 [project.scripts]
-csv-view   = "csv_viewer.csv_filter:main"
-excel-view = "excel_viewer.show_table:main"
+csv-view     = "csv_viewer.csv_filter:main"
+excel-view   = "excel_viewer.show_table:main"
+join-checker = "join_checker.join_checker:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["csv_viewer", "excel_viewer", "utils"]
+packages = ["csv_viewer", "excel_viewer", "utils", "join_checker"]
