@@ -59,4 +59,8 @@ category =
 
 ## Dependencies
 
-stdlib only。追加インストール不要。
+```bash
+pip install -r csv_viewer/requirements.txt
+```
+
+表示結果は `output/` 配下に Excel（`columns` シート + `data` シート、auto-filter 付き）としても書き出される。
