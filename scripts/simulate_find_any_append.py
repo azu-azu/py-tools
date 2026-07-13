@@ -21,6 +21,19 @@ TARGET_ROW_ID = "_target_row_id"
 SOURCE_ROW_ID = "_source_row_id"
 
 
+def _stringify(value: object) -> str:
+    """スカラー値を文字列化する（NaN は呼び出し側で除外済みの前提）。
+
+    列にNaNが1件でも混じると pandas が列全体を float64 に昇格させるため、
+    整数IDのつもりの値が 123 ではなく 123.0 になる。この差で
+    str(needle) と haystack の文字列表現が食い違い、本来一致すべき行が
+    静かにマッチしなくなるので、整数値のfloatは末尾の ".0" を落とす。
+    """
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
 def simulate_find_any_append(
     targets_df: pd.DataFrame,   # 残したい元データ
     source_df: pd.DataFrame,    # ルックアップ表（探す値と追加列を持つ）
@@ -73,9 +86,10 @@ def simulate_find_any_append(
     source = source_df[required_source_columns].reset_index(drop=True)
 
     # find_field を文字列化した haystack。NaN は NaN のまま残す
-    # （astype(str) だけだと NaN が "nan" になり誤マッチするため where で戻す）。
+    # （astype(str) だけだと NaN が "nan" になり誤マッチするため map で除外する）。
+    # _stringify で整数値floatの ".0" 付与を防ぎ、needle 側と表記を揃える。
     raw_find = targets[find_field]
-    haystack = raw_find.astype(str).where(raw_find.notna(), other=pd.NA)
+    haystack = raw_find.map(lambda v: _stringify(v) if pd.notna(v) else pd.NA)
     haystack_cmp = haystack if case_sensitive else haystack.str.lower()
 
     # ── マッチ結果の入れ物 ─────────────────────────────────────────
@@ -94,7 +108,7 @@ def simulate_find_any_append(
         needle = values[0]
         if pd.isna(needle):
             continue
-        needle = str(needle)
+        needle = _stringify(needle)
         if not needle:
             continue
 
