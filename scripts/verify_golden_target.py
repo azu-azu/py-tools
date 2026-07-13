@@ -336,6 +336,7 @@ def main() -> None:
             .sort_values(["column", LEFT_KEY])
             .reset_index(drop=True)
         )
+        unique_pairs.index += 1  # 表示の連番を1始まりにする
         print(f"\n {mark_ng} 近似一致 / 文字化けだと思われるもの:")
         print(unique_pairs)
 
