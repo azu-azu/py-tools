@@ -2,8 +2,8 @@
 
 targets_df の find_field に、source_df の search_field の値が
 部分文字列として含まれていれば、その source 行の append_fields を付与する。
-1つの target が複数の source 行にマッチした場合は、source の並び順で
-最初にマッチした行の値を採用する（Alteryx の first match 挙動に合わせる）。
+1つの target が複数の source 行にマッチした場合、どの行の値を採用するかは
+replace_multiple_found で決まる（Alteryx の ReplaceMultipleFound 設定に対応）。
 
 cross join + apply(axis=1) は O(n×m) の Python ループになって重いので、
 source（たいてい小さい方）を m 回ループし、各 needle について
@@ -28,10 +28,17 @@ def simulate_find_any_append(
     find_field: str,
     search_field: str,
     append_fields: list[str],
-    case_sensitive: bool = True,  # Alteryx の「Case Insensitive Find」設定に合わせて調整する
+    case_sensitive: bool = True,  # Alteryx の NoCase=False（大小を区別）に対応
+    replace_multiple_found: bool = True,  # Alteryx の ReplaceMultipleFound。True=last match、False=first match
     verbose: bool = True,
 ) -> pd.DataFrame:
-    """find_field に search_field 値を部分一致で探し、first match の append_fields を付与する。"""
+    """find_field に search_field 値を部分一致で探し、マッチした append_fields を付与する。
+
+    Find Replace は join ではないので、複数マッチしても出力は 1 target = 1 行。
+    複数の source 行にマッチしたときにどの行の値を採用するかは
+    replace_multiple_found で決まる（Alteryx の ReplaceMultipleFound 設定に対応）:
+    True なら source 順で最後にマッチした行、False なら最初にマッチした行。
+    """
 
     start = time.perf_counter()
 
@@ -72,14 +79,14 @@ def simulate_find_any_append(
     haystack_cmp = haystack if case_sensitive else haystack.str.lower()
 
     # ── マッチ結果の入れ物 ─────────────────────────────────────────
-    first_source_id = pd.Series(pd.NA, index=targets.index, dtype="object")
+    winning_source_id = pd.Series(pd.NA, index=targets.index, dtype="object")
     matched_needle = pd.Series(pd.NA, index=targets.index, dtype="object")
     appended = {
         field: pd.Series(pd.NA, index=targets.index, dtype="object")
         for field in append_fields
     }
     match_count = pd.Series(0, index=targets.index, dtype="int64")  # 確認用: 何行の source にマッチしたか
-    unmatched = pd.Series(True, index=targets.index)  # まだ first match が確定していない行
+    unmatched = pd.Series(True, index=targets.index)  # first match モードでまだ確定していない行
 
     # source を並び順にループ。itertuples の 0 番目が search_field、以降が append_fields。
     append_positions = range(1, len(required_source_columns))
@@ -99,20 +106,20 @@ def simulate_find_any_append(
         # 診断用は「何行の source にマッチしたか」なので確定済みも含めて数える
         match_count += contains.astype("int64")
 
-        # 実際に値を埋めるのは未確定の行だけ（source 順で最初のマッチが勝つ）
-        newly = contains & unmatched
-        if not newly.any():
-            continue
-
-        first_source_id[newly] = source_id
-        matched_needle[newly] = needle
-        for position, field in zip(append_positions, append_fields):
-            appended[field][newly] = values[position]
-        unmatched &= ~newly
+        # 値を埋める対象。ReplaceMultipleFound=True(last match) はマッチのたびに上書きし、
+        # source 順で最後にマッチした行が残る。False(first match) は未確定の行だけ埋める。
+        fill = contains if replace_multiple_found else (contains & unmatched)
+        if fill.any():
+            winning_source_id[fill] = source_id
+            matched_needle[fill] = needle
+            for position, field in zip(append_positions, append_fields):
+                appended[field][fill] = values[position]
+        if not replace_multiple_found:
+            unmatched &= ~contains
 
     # ── 結果の組み立て（入力順のまま。matched/unmatched に分割しない）──
     result = targets.copy()
-    result[SOURCE_ROW_ID] = first_source_id.astype("Int64")
+    result[SOURCE_ROW_ID] = winning_source_id.astype("Int64")
     result[search_field] = matched_needle
     for field in append_fields:
         result[field] = appended[field]
@@ -163,7 +170,7 @@ def _print_summary(
         {
             TARGET_ROW_ID: result[TARGET_ROW_ID],
             "matched_lookup_rows": match_count.to_numpy(),
-            f"first_{search_field}": matched_needle.to_numpy(),
+            f"chosen_{search_field}": matched_needle.to_numpy(),
         }
     )
     ambiguous = ambiguous[ambiguous["matched_lookup_rows"] > 1].sort_values(
