@@ -147,7 +147,9 @@ def normalize(
     # 行順の差を消す：全カラムでソートしてから、同一キー内の連番(_seq)を振る
     # (①key_colsに重複があっても total 行が一意に対応づく。②連番の前提を
     #  ファイルの元の並び順に依存させないため、全カラムでの決定的整列が必須)
-    df = df.sort_values(list(df.columns)).reset_index(drop=True)
+    # 列名でソートした順序で並べる：golden/target で列順が違っても左右が必ず
+    # 同じ行順になる（list(df.columns) だと列順依存で _seq がズレて偽差分が出る）
+    df = df.sort_values(sorted(df.columns)).reset_index(drop=True)
     df["_seq"] = df.groupby(key_cols).cumcount()
 
     return df.sort_values(key_cols + ["_seq"]).reset_index(drop=True)
