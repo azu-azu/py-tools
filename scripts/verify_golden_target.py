@@ -73,11 +73,15 @@ def detect_date_cols(
     この関数は「基準側（golden）1つ」に対してだけ呼び、得たリストを両方に適用すること。
 
     - 純粋な数値列（ID・郵便番号・コード等）は誤検出を避けるため除外する
-    - パース成功率が min_ratio 以上の列だけを日付列とみなす
+    - NaN・空白は判定対象から除外し、「実際に値が入っているセル」の中での
+      パース成功率で判定する（値がまばらでも中身が日付なら拾う）
+    - 成功率が min_ratio 以上の列だけを日付列とみなす
     """
     cols: list[str] = []
     for col in df.select_dtypes(include="object").columns:
-        s = df[col].astype(str).str.strip()
+        # dropna() を先に通す。astype(str) を先にやると NaN が "nan" になり、
+        # パース失敗として成功率を不当に下げてしまうため。
+        s = df[col].dropna().astype(str).str.strip()
         s = s[s != ""]
         if s.empty:
             continue
