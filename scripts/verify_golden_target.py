@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,9 +62,54 @@ def read_csv(path: Path, label: str) -> pd.DataFrame:
 
 
 # ────────────────────────────────────────────────────────────────────
+# 日付列の自動判定
+
+def detect_date_cols(
+    df: pd.DataFrame, min_ratio: float = 0.95, sample: int = 2000
+) -> list[str]:
+    """object 型カラムのうち、値の大半が日付としてパースできる列名を返す。
+
+    突合ツールで左右バラバラに判定すると非対称になって偽差分の原因になるため、
+    この関数は「基準側（golden）1つ」に対してだけ呼び、得たリストを両方に適用すること。
+
+    - 純粋な数値列（ID・郵便番号・コード等）は誤検出を避けるため除外する
+    - パース成功率が min_ratio 以上の列だけを日付列とみなす
+    """
+    cols: list[str] = []
+    for col in df.select_dtypes(include="object").columns:
+        s = df[col].astype(str).str.strip()
+        s = s[s != ""]
+        if s.empty:
+            continue
+        if s.str.fullmatch(r"\d+").all():  # 純粋な数字列（ID等）は日付扱いしない
+            continue
+        smp = s.sample(min(len(s), sample), random_state=0)
+        # 混在フォーマットを許容した best-effort な判定なので、フォーマット推論の
+        # UserWarning は抑止する（本判定は verify() 側のログで可視化される）
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            ratio = pd.to_datetime(smp, errors="coerce").notna().mean()
+        if ratio >= min_ratio:
+            cols.append(col)
+    return cols
+
+
+def resolve_date_cols(reference: pd.DataFrame) -> list[str]:
+    """手動指定(DATE_COLS)と自動判定を統合した日付列リストを返す。
+
+    手動指定を優先しつつ自動検出を補助として足す。順序は保ちつつ重複を除く。
+    """
+    manual = [c for c in DATE_COLS if c]  # DATE_COLS の空文字プレースホルダを除去
+    auto = detect_date_cols(reference)
+    return list(dict.fromkeys(manual + auto))
+
+
+# ────────────────────────────────────────────────────────────────────
 # 正規化
 
-def normalize(df: pd.DataFrame, key_cols: list[str]) -> pd.DataFrame:
+def normalize(
+    df: pd.DataFrame, key_cols: list[str], date_cols: list[str]
+) -> pd.DataFrame:
     """突合前の正規化。"""
     df = df.copy()
 
@@ -77,7 +123,7 @@ def normalize(df: pd.DataFrame, key_cols: list[str]) -> pd.DataFrame:
     df[obj_cols] = df[obj_cols].fillna("")
 
     # 日付カラムを統一フォーマットに正規化
-    for col in DATE_COLS:
+    for col in date_cols:
         if col in df.columns:
             parsed = pd.to_datetime(df[col], errors="coerce")
 
@@ -138,8 +184,14 @@ def verify(
 ) -> VerifyResult:
     """2つのDataFrameを突合し、行差分・セル差分を返す"""
 
-    left_n = normalize(left, key_cols)
-    right_n = normalize(right, key_cols)
+    # 日付列は基準側(golden=left)だけで一度だけ決め、両方に同じリストを適用する
+    # （左右で別々に判定すると非対称になり偽差分の原因になるため）
+    date_cols = resolve_date_cols(left)
+    manual = [c for c in DATE_COLS if c]
+    print(f"🔖 date_cols: {date_cols} (manual={manual}, auto={[c for c in date_cols if c not in manual]})")
+
+    left_n = normalize(left, key_cols, date_cols)
+    right_n = normalize(right, key_cols, date_cols)
 
     merge_keys = key_cols + ["_seq"]
 
