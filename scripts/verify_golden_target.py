@@ -144,13 +144,10 @@ def normalize(
     obj_cols = df.select_dtypes(include="object").columns
     df[obj_cols] = df[obj_cols].fillna("")
 
-    # 行順の差を消す：全カラムでソートしてから、同一キー内の連番(_seq)を振る
-    # (①key_colsに重複があっても total 行が一意に対応づく。②連番の前提を
-    #  ファイルの元の並び順に依存させないため、全カラムでの決定的整列が必須)
-    df = df.sort_values(list(df.columns)).reset_index(drop=True)
-    df["_seq"] = df.groupby(key_cols).cumcount()
-
-    return df.sort_values(key_cols + ["_seq"]).reset_index(drop=True)
+    # 決定的な整列（列名ソート順で並べる）だけ行う。golden/target で列順が
+    # 違っても左右が同じ順序になる。同一キー内の連番(_seq)や行のペアリングは
+    # verify() 側の2段階マッチングで扱うため、ここでは付与しない。
+    return df.sort_values(sorted(df.columns)).reset_index(drop=True)
 
 
 def ascii_signature(s: str) -> str:
@@ -197,21 +194,54 @@ def verify(
     left_n = normalize(left, key_cols, date_cols)
     right_n = normalize(right, key_cols, date_cols)
 
+    # 左右に共通する列だけを対象にする（列順もそろう）
+    common_cols = [c for c in left_n.columns if c in right_n.columns]
+    left_n = left_n[common_cols]
+    right_n = right_n[common_cols]
+
+    # ────────────────────────────────────────────────────────────────────
+    # Stage 1: 完全一致行を並び順に依存せず吸収する
+    # 全列でグループ化した出現順連番(_fseq)を振り、(全列 + _fseq) で突合する。
+    # 中身が同じ行は golden/target で同じ連番になって必ずペアになるので、並び順が
+    # 違っても差分にならない。中身が違う行だけが Stage 2 に落ちる（＝比較対象の
+    # 値の差でペアが崩れ、一致行まで巻き込んで大量の偽差分になる現象を防ぐ）。
+    left_f = left_n.copy()
+    right_f = right_n.copy()
+    left_f["_fseq"] = left_f.groupby(common_cols, dropna=False).cumcount()
+    right_f["_fseq"] = right_f.groupby(common_cols, dropna=False).cumcount()
+
+    m1 = left_f.merge(
+        right_f, how="outer", on=common_cols + ["_fseq"], indicator=True
+    )
+    resid_left = m1.loc[m1["_merge"] == "left_only", common_cols].reset_index(drop=True)
+    resid_right = m1.loc[m1["_merge"] == "right_only", common_cols].reset_index(drop=True)
+
+    # ────────────────────────────────────────────────────────────────────
+    # Stage 2: 完全一致しなかった残差だけをキーで対応づける
+    # 残差は「本当に違う行」だけなので、ここでの連番ペアリングは差分行に限定され、
+    # 一致行を巻き込んだ波及が起きない。
+    resid_left = resid_left.sort_values(sorted(common_cols)).reset_index(drop=True)
+    resid_right = resid_right.sort_values(sorted(common_cols)).reset_index(drop=True)
+    resid_left["_seq"] = resid_left.groupby(key_cols, dropna=False).cumcount()
+    resid_right["_seq"] = resid_right.groupby(key_cols, dropna=False).cumcount()
+
     merge_keys = key_cols + ["_seq"]
 
-    # ────────────────────────────────────────────────────────────────────
-    # 行単位の差分
-    merged = left_n.merge(
-        right_n, how="outer", on=merge_keys, indicator=True, suffixes=("_L", "_R")
+    # 残差キーの左右対応（only_left / only_right / both）
+    key_match = resid_left[merge_keys].merge(
+        resid_right[merge_keys], how="outer", on=merge_keys, indicator=True
     )
-    only_left = merged[merged["_merge"] == "left_only"].drop(columns="_seq")
-    only_right = merged[merged["_merge"] == "right_only"].drop(columns="_seq")
+    left_only_keys = key_match.loc[key_match["_merge"] == "left_only", merge_keys]
+    right_only_keys = key_match.loc[key_match["_merge"] == "right_only", merge_keys]
+    both_keys = key_match.loc[key_match["_merge"] == "both", merge_keys]
+
+    only_left = resid_left.merge(left_only_keys, on=merge_keys).drop(columns="_seq")
+    only_right = resid_right.merge(right_only_keys, on=merge_keys).drop(columns="_seq")
 
     # ────────────────────────────────────────────────────────────────────
-    # セル単位の差分（両方に存在する行のみ）
-    both_keys = merged.loc[merged["_merge"] == "both", merge_keys]
-    left_both = left_n.merge(both_keys, on=merge_keys).set_index(merge_keys)
-    right_both = right_n.merge(both_keys, on=merge_keys).set_index(merge_keys)
+    # セル単位の差分（残差の中で左右がペアになった行のみ）
+    left_both = resid_left.merge(both_keys, on=merge_keys).set_index(merge_keys)
+    right_both = resid_right.merge(both_keys, on=merge_keys).set_index(merge_keys)
     right_both = right_both[left_both.columns]  # 列順をそろえる
 
     diffs: list[pd.DataFrame] = []
@@ -310,12 +340,10 @@ def main() -> None:
     print(f"\n{mark} {RIGHT_KEY} のみ: {len(result.only_right)}行")
 
     if not result.only_right.empty:
-        my_columns = (
-            DEFAULT_KEYS
-            + [f"{c}_L" for c in EXTRA_COLS]
-            + [f"{c}_R" for c in EXTRA_COLS]
-        )
-        subset = result.only_right[my_columns]
+        # only_right は target 側だけの行（左右サフィックス無しの素の列）
+        my_columns = list(dict.fromkeys(DEFAULT_KEYS + [c for c in EXTRA_COLS if c]))
+        my_columns = [c for c in my_columns if c in result.only_right.columns]
+        subset = result.only_right[my_columns] if my_columns else result.only_right
         print(f"  = top{n} =")
         print(subset.head(n).to_string())
 
