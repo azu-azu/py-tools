@@ -316,11 +316,6 @@ def main() -> None:
         print(subset.head(n).to_string())
 
     mark = mark_ng
-    if len(result.fuzzy_matched) == 0:
-        mark = mark_ok
-    print(f"\n{mark} 近似値(文字化けスルー): {len(result.fuzzy_matched)}行")
-
-    mark = mark_ng
     if len(result.cell_diff) == 0:
         mark = mark_ok
     print(f"\n{mark} 両方にあるが値が違う行: {len(result.cell_diff)}行")
@@ -329,6 +324,7 @@ def main() -> None:
         print(f"  = top{n} =")
         print(result.cell_diff.head(n).to_string())
 
+    unique_pairs = ()
     if not result.fuzzy_matched.empty:
         unique_pairs = (
             result.fuzzy_matched[["column", LEFT_KEY, RIGHT_KEY]]
@@ -337,7 +333,10 @@ def main() -> None:
             .reset_index(drop=True)
         )
         unique_pairs.index += 1  # 表示の連番を1始まりにする
-        print(f"\n {mark_ng} 近似一致 / 文字化けだと思われるもの:")
+
+    mark = mark_ok if len(result.fuzzy_matched) == 0 else mark_ng
+    print(f"\n{mark} 文字化けだと思われるもの: {len(result.fuzzy_matched)}行, {len(unique_pairs)}件")
+    if not result.fuzzy_matched.empty:
         print(unique_pairs)
 
 
