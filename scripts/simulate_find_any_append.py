@@ -127,7 +127,11 @@ def simulate_find_any_append(
             winning_source_id[fill] = source_id
             matched_needle[fill] = needle
             for position, field in zip(append_positions, append_fields):
-                appended[field][fill] = values[position]
+                # append 値も needle/haystack と同様に _stringify する。source 列が
+                # NaN 混在で float64 昇格すると 123 が 123.0 になり、golden の "123"
+                # と文字列比較で偽差分になるため（NaN は NA のまま残す）。
+                value = values[position]
+                appended[field][fill] = _stringify(value) if pd.notna(value) else pd.NA
         if not replace_multiple_found:
             unmatched &= ~contains
 
