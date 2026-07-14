@@ -55,6 +55,10 @@ def simulate_find_any_append(
 
     start = time.perf_counter()
 
+    if verbose:
+        print("\nsimulate_find_any_append :")
+        print("  target の文字列の中に、source の検索値が「部分文字列として」含まれるか で判定する")
+
     # ── 入力チェック ──────────────────────────────────────────────
     if find_field not in targets_df.columns:
         raise KeyError(f"targets_df に列がありません: {find_field}")
@@ -159,6 +163,7 @@ def simulate_find_any_append(
             match_count=match_count,
             matched_needle=matched_needle,
             search_field=search_field,
+            append_fields=append_fields,
         )
 
     return result
@@ -172,6 +177,7 @@ def _print_summary(
     match_count: pd.Series,
     matched_needle: pd.Series,
     search_field: str,
+    append_fields: list[str],
 ) -> None:
     """処理時間・行数・複数マッチ（曖昧マッチ）の確認用サマリを出す。"""
 
@@ -183,18 +189,23 @@ def _print_summary(
     print(f"rows after    : {len(result):,}")
     print(f"matched rows  : {matched_rows:,}")
 
-    # 1 target が複数 source 行にマッチした（＝採用値が source 順に依存する）行を可視化
+    # 1 target が複数 source 行にマッチした（＝採用値が source 順に依存する）行を可視化。
+    # 実際に採用された append 値も並べて、どの値が付いたか確認できるようにする。
     ambiguous = pd.DataFrame(
         {
-            TARGET_ROW_ID: result[TARGET_ROW_ID],
+            TARGET_ROW_ID: result[TARGET_ROW_ID].to_numpy(),
             "matched_lookup_rows": match_count.to_numpy(),
             f"chosen_{search_field}": matched_needle.to_numpy(),
         }
     )
+    for field in append_fields:
+        ambiguous[field] = result[field].to_numpy()
+
     ambiguous = ambiguous[ambiguous["matched_lookup_rows"] > 1].sort_values(
         "matched_lookup_rows", ascending=False
     )
     print(f"ambiguous rows: {len(ambiguous):,}（複数 source にマッチ）")
     if not ambiguous.empty:
+        print("== top 10 ==")
         print(ambiguous.head(10).to_string(index=False))
     print()
