@@ -230,3 +230,47 @@ def _print_summary(
         print("== top 10 ==")
         print(ambiguous[show_cols].head(10).to_string(index=False))
     print()
+
+
+def main() -> None:
+    """使い方の例（動作確認用のデモ）。
+
+    このスクリプトは import して simulate_find_any_append() を直接呼ぶのが本来の
+    使い方。ここはサンプルデータで挙動と出力を確認するためのデモで、
+    `python scripts/simulate_find_any_append.py` で実行できる。
+    実データは自分で DataFrame にして関数へ渡すこと。
+    """
+    targets_df = pd.DataFrame(
+        {
+            "text": [
+                "東京都渋谷区 アップルストア",
+                "cherry apple pie",
+                "just berry",
+                "nothing here",
+            ],
+        }
+    )
+    source_df = pd.DataFrame(
+        {
+            "kw":    ["東京", "渋谷", "アップル", "apple", "cherry", "berry"],
+            "label": ["都", "区", "林檎", "APL", "CHR", "BRY"],
+            "code":  [1, 2, 3, 4, 5, 6],
+        }
+    )
+
+    result = simulate_find_any_append(
+        targets_df,
+        source_df,
+        find_field="text",
+        search_field="kw",
+        append_fields=["label", "code"],
+        replace_multiple_found=True,   # Alteryx の ReplaceMultipleFound
+        case_sensitive=True,           # Alteryx の NoCase=False
+    )
+
+    print("\n-- result --")
+    print(result.to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()
