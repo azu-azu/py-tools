@@ -161,7 +161,7 @@ def simulate_find_any_append(
             targets_df=targets_df,
             result=result,
             match_count=match_count,
-            matched_needle=matched_needle,
+            find_field=find_field,
             search_field=search_field,
             append_fields=append_fields,
         )
@@ -175,7 +175,7 @@ def _print_summary(
     targets_df: pd.DataFrame,
     result: pd.DataFrame,
     match_count: pd.Series,
-    matched_needle: pd.Series,
+    find_field: str,
     search_field: str,
     append_fields: list[str],
 ) -> None:
@@ -190,22 +190,24 @@ def _print_summary(
     print(f"matched rows  : {matched_rows:,}")
 
     # 1 target が複数 source 行にマッチした（＝採用値が source 順に依存する）行を可視化。
-    # 実際に採用された append 値も並べて、どの値が付いたか確認できるようにする。
-    ambiguous = pd.DataFrame(
-        {
-            TARGET_ROW_ID: result[TARGET_ROW_ID].to_numpy(),
-            "matched_lookup_rows": match_count.to_numpy(),
-            f"chosen_{search_field}": matched_needle.to_numpy(),
-        }
-    )
-    for field in append_fields:
-        ambiguous[field] = result[field].to_numpy()
-
+    # target 側（find_field の本文）と source 側（採用された検索値・source 行・append 値）
+    # の両方を並べ、どのテキストがどの値を拾ったか確認できるようにする。
+    ambiguous = result.copy()
+    ambiguous["matched_lookup_rows"] = match_count.to_numpy()
     ambiguous = ambiguous[ambiguous["matched_lookup_rows"] > 1].sort_values(
         "matched_lookup_rows", ascending=False
     )
+
+    show_cols = [
+        TARGET_ROW_ID,        # target: 行 ID
+        find_field,           # target: マッチ対象の本文
+        "matched_lookup_rows",  # 何行の source にマッチしたか
+        SOURCE_ROW_ID,        # source: 採用された source 行
+        search_field,         # source: 採用された検索値
+        *append_fields,       # source: 付与された値
+    ]
     print(f"ambiguous rows: {len(ambiguous):,}（複数 source にマッチ）")
     if not ambiguous.empty:
         print("== top 10 ==")
-        print(ambiguous.head(10).to_string(index=False))
+        print(ambiguous[show_cols].head(10).to_string(index=False))
     print()
