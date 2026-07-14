@@ -106,6 +106,12 @@ def simulate_find_any_append(
     match_count = pd.Series(0, index=targets.index, dtype="int64")  # 確認用: 何行の source にマッチしたか
     unmatched = pd.Series(True, index=targets.index)  # first match モードでまだ確定していない行
 
+    # verbose 時だけ、各 target にマッチした検索値をすべて集める（確認表示用）。
+    # source 順に append するので、last match で採用される値はリストの末尾になる。
+    matched_needles_lists: list[list[str]] | None = (
+        [[] for _ in range(len(targets))] if verbose else None
+    )
+
     # source を並び順にループ。itertuples の 0 番目が search_field、以降が append_fields。
     append_positions = range(1, len(required_source_columns))
     for source_id, values in enumerate(source.itertuples(index=False, name=None)):
@@ -123,6 +129,9 @@ def simulate_find_any_append(
 
         # 診断用は「何行の source にマッチしたか」なので確定済みも含めて数える
         match_count += contains.astype("int64")
+        if matched_needles_lists is not None:
+            for i in contains.to_numpy().nonzero()[0]:
+                matched_needles_lists[i].append(needle)
 
         # 値を埋める対象。ReplaceMultipleFound=True(last match) はマッチのたびに上書きし、
         # source 順で最後にマッチした行が残る。False(first match) は未確定の行だけ埋める。
@@ -156,6 +165,11 @@ def simulate_find_any_append(
     result = result[result_columns]
 
     if verbose:
+        all_matched_needles = pd.Series(
+            [" | ".join(lst) for lst in matched_needles_lists],
+            index=targets.index,
+            dtype="object",
+        )
         _print_summary(
             start=start,
             targets_df=targets_df,
@@ -164,6 +178,7 @@ def simulate_find_any_append(
             find_field=find_field,
             search_field=search_field,
             append_fields=append_fields,
+            all_matched_needles=all_matched_needles,
         )
 
     return result
@@ -178,6 +193,7 @@ def _print_summary(
     find_field: str,
     search_field: str,
     append_fields: list[str],
+    all_matched_needles: pd.Series,
 ) -> None:
     """処理時間・行数・複数マッチ（曖昧マッチ）の確認用サマリを出す。"""
 
@@ -192,8 +208,10 @@ def _print_summary(
     # 1 target が複数 source 行にマッチした（＝採用値が source 順に依存する）行を可視化。
     # target 側（find_field の本文）と source 側（採用された検索値・source 行・append 値）
     # の両方を並べ、どのテキストがどの値を拾ったか確認できるようにする。
+    all_col = f"all_matched_{search_field}"
     ambiguous = result.copy()
     ambiguous["matched_lookup_rows"] = match_count.to_numpy()
+    ambiguous[all_col] = all_matched_needles.to_numpy()
     ambiguous = ambiguous[ambiguous["matched_lookup_rows"] > 1].sort_values(
         "matched_lookup_rows", ascending=False
     )
@@ -202,6 +220,7 @@ def _print_summary(
         TARGET_ROW_ID,        # target: 行 ID
         find_field,           # target: マッチ対象の本文
         "matched_lookup_rows",  # 何行の source にマッチしたか
+        all_col,              # source: マッチした検索値すべて（source 順）
         SOURCE_ROW_ID,        # source: 採用された source 行
         search_field,         # source: 採用された検索値
         *append_fields,       # source: 付与された値
