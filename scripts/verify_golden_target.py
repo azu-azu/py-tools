@@ -387,7 +387,8 @@ def main() -> None:
     if not result.only_left.empty:
         my_columns = DEFAULT_KEYS
         subset = result.only_left[my_columns]
-        print(f"  = top{n} =")
+        if len(subset) > n:
+            print(f"  = top{n} =")
         print(subset.head(n).to_string())
 
     mark = mark_ng
@@ -400,7 +401,8 @@ def main() -> None:
         my_columns = list(dict.fromkeys(DEFAULT_KEYS + [c for c in EXTRA_COLS if c]))
         my_columns = [c for c in my_columns if c in result.only_right.columns]
         subset = result.only_right[my_columns] if my_columns else result.only_right
-        print(f"  = top{n} =")
+        if len(subset) > n:
+            print(f"  = top{n} =")
         print(subset.head(n).to_string())
 
     mark = mark_ng
@@ -409,7 +411,8 @@ def main() -> None:
     print(f"\n{mark} 両方にあるが値が違う行: {len(result.cell_diff)}行")
 
     if not result.cell_diff.empty:
-        print(f"  = top{n} =")
+        if len(result.cell_diff) > n:
+            print(f"  = top{n} =")
         print(result.cell_diff.head(n).to_string())
 
     unique_pairs = ()
