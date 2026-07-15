@@ -382,7 +382,7 @@ def main() -> None:
     mark = mark_ng
     if len(result.only_left) == 0:
         mark = mark_ok
-    print(f"\n{mark} {LEFT_KEY} のみ: {len(result.only_left)}行")
+    print(f"\n{mark} {LEFT_KEY} のみの行: {len(result.only_left)}行")
 
     if not result.only_left.empty:
         my_columns = DEFAULT_KEYS
@@ -394,7 +394,7 @@ def main() -> None:
     mark = mark_ng
     if len(result.only_right) == 0:
         mark = mark_ok
-    print(f"\n{mark} {RIGHT_KEY} のみ: {len(result.only_right)}行")
+    print(f"\n{mark} {RIGHT_KEY} のみの行: {len(result.only_right)}行")
 
     if not result.only_right.empty:
         # only_right は target 側だけの行（左右サフィックス無しの素の列）
