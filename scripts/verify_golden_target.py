@@ -168,10 +168,18 @@ class VerifyResult:
     only_right: pd.DataFrame  # target にだけある行
     cell_diff: pd.DataFrame  # 両方にあるが値が違う行
     fuzzy_matched: pd.DataFrame  # 近似比較で一致扱いにしたセル
+    only_left_cols: list[str]  # golden にだけある列
+    only_right_cols: list[str]  # target にだけある列
 
     @property
     def is_match(self) -> bool:
-        return self.only_left.empty and self.only_right.empty and self.cell_diff.empty
+        return (
+            self.only_left.empty
+            and self.only_right.empty
+            and self.cell_diff.empty
+            and not self.only_left_cols
+            and not self.only_right_cols
+        )
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -183,16 +191,48 @@ def verify(
         key_cols: list[str],
         float_atol: float = FLOAT_ATOL,
 ) -> VerifyResult:
-    """2つのDataFrameを突合し、行差分・セル差分を返す"""
+    """2つのDataFrameを突合し、列差分・行差分・セル差分を返す
+
+    - 列差分: 片側にしかない列を only_left_cols / only_right_cols として返す
+    - 行・セル比較: 左右に共通する列だけを対象に行う
+    - 突合キー列が片側にしか無い場合は ValueError
+    """
+
+    print(f"\n🔖 {LEFT_KEY}:")
+    i = 0
+    for col in left.columns:
+        i += 1
+        print(f"  {i}:  {col}")
+
+    print(f"\n🔖 {RIGHT_KEY}:")
+    i = 0
+    for col in right.columns:
+        i += 1
+        print(f"  {i}:  {col}")
 
     # 日付列は基準側(golden=left)だけで一度だけ決め、両方に同じリストを適用する
     # （左右で別々に判定すると非対称になり偽差分の原因になるため）
     date_cols = resolve_date_cols(left)
     manual = [c for c in DATE_COLS if c]
-    print(f"🔖 date_cols: {date_cols} (manual={manual}, auto={[c for c in date_cols if c not in manual]})")
+
+    print(f"\n🔖 date_cols (Total: {len(date_cols)}):")
+    i = 0
+    for col in date_cols:
+        i += 1
+        is_manual = col in manual
+        print(f"  {i}:  {col} {'(manual)' if is_manual else '(auto)'}")
 
     left_n = normalize(left, key_cols, date_cols)
     right_n = normalize(right, key_cols, date_cols)
+
+    # 列差分（片側にしかない列）を先に検出しておく。
+    # 行・セル比較は共通列だけで行うが、列差分も結果として返す
+    only_left_cols = [c for c in left_n.columns if c not in right_n.columns]
+    only_right_cols = [c for c in right_n.columns if c not in left_n.columns]
+
+    missing_keys = [c for c in key_cols if c in only_left_cols or c in only_right_cols]
+    if missing_keys:
+        raise ValueError(f"突合キー列が片側にしか存在しません: {missing_keys}")
 
     # 左右に共通する列だけを対象にする（列順もそろう）
     common_cols = [c for c in left_n.columns if c in right_n.columns]
@@ -292,7 +332,9 @@ def verify(
         only_left=only_left,
         only_right=only_right,
         cell_diff=cell_diff,
-        fuzzy_matched=fuzzy_matched
+        fuzzy_matched=fuzzy_matched,
+        only_left_cols=only_left_cols,
+        only_right_cols=only_right_cols,
     )
 
 
@@ -323,28 +365,44 @@ def main() -> None:
     mark_ng = "⚠️"
     n = 20
 
+    mark = mark_ok if not result.only_left_cols else mark_ng
+    print(f"\n{mark} {LEFT_KEY} のみの列: {len(result.only_left_cols)}列")
+    i = 0
+    for col in result.only_left_cols:
+        i += 1
+        print(f"  {i}:  {col}")
+
+    mark = mark_ok if not result.only_right_cols else mark_ng
+    print(f"\n{mark} {RIGHT_KEY} のみの列: {len(result.only_right_cols)}列")
+    i = 0
+    for col in result.only_right_cols:
+        i += 1
+        print(f"  {i}:  {col}")
+
     mark = mark_ng
     if len(result.only_left) == 0:
         mark = mark_ok
-    print(f"\n{mark} {LEFT_KEY} のみ: {len(result.only_left)}行")
+    print(f"\n{mark} {LEFT_KEY} のみの行: {len(result.only_left)}行")
 
     if not result.only_left.empty:
         my_columns = DEFAULT_KEYS
         subset = result.only_left[my_columns]
-        print(f"  = top{n} =")
+        if len(subset) > n:
+            print(f"  = top{n} =")
         print(subset.head(n).to_string())
 
     mark = mark_ng
     if len(result.only_right) == 0:
         mark = mark_ok
-    print(f"\n{mark} {RIGHT_KEY} のみ: {len(result.only_right)}行")
+    print(f"\n{mark} {RIGHT_KEY} のみの行: {len(result.only_right)}行")
 
     if not result.only_right.empty:
         # only_right は target 側だけの行（左右サフィックス無しの素の列）
         my_columns = list(dict.fromkeys(DEFAULT_KEYS + [c for c in EXTRA_COLS if c]))
         my_columns = [c for c in my_columns if c in result.only_right.columns]
         subset = result.only_right[my_columns] if my_columns else result.only_right
-        print(f"  = top{n} =")
+        if len(subset) > n:
+            print(f"  = top{n} =")
         print(subset.head(n).to_string())
 
     mark = mark_ng
@@ -353,7 +411,8 @@ def main() -> None:
     print(f"\n{mark} 両方にあるが値が違う行: {len(result.cell_diff)}行")
 
     if not result.cell_diff.empty:
-        print(f"  = top{n} =")
+        if len(result.cell_diff) > n:
+            print(f"  = top{n} =")
         print(result.cell_diff.head(n).to_string())
 
     unique_pairs = ()
