@@ -185,11 +185,23 @@ def verify(
 ) -> VerifyResult:
     """2つのDataFrameを突合し、行差分・セル差分を返す"""
 
+    print(f"\n🔖 {LEFT_KEY}:")
+    for col in left.columns:
+        print(f"  - {col}")
+
+    print(f"\n🔖 {RIGHT_KEY}:")
+    for col in right.columns:
+        print(f"  - {col}")
+
     # 日付列は基準側(golden=left)だけで一度だけ決め、両方に同じリストを適用する
     # （左右で別々に判定すると非対称になり偽差分の原因になるため）
     date_cols = resolve_date_cols(left)
     manual = [c for c in DATE_COLS if c]
-    print(f"🔖 date_cols: {date_cols} (manual={manual}, auto={[c for c in date_cols if c not in manual]})")
+
+    print(f"\n🔖 date_cols (Total: {len(date_cols)}):")
+    for col in date_cols:
+        is_manual = col in manual
+        print(f"  - {col} {'(manual)' if is_manual else '(auto)'}")
 
     left_n = normalize(left, key_cols, date_cols)
     right_n = normalize(right, key_cols, date_cols)
