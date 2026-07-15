@@ -168,10 +168,18 @@ class VerifyResult:
     only_right: pd.DataFrame  # target にだけある行
     cell_diff: pd.DataFrame  # 両方にあるが値が違う行
     fuzzy_matched: pd.DataFrame  # 近似比較で一致扱いにしたセル
+    only_left_cols: list[str]  # golden にだけある列
+    only_right_cols: list[str]  # target にだけある列
 
     @property
     def is_match(self) -> bool:
-        return self.only_left.empty and self.only_right.empty and self.cell_diff.empty
+        return (
+            self.only_left.empty
+            and self.only_right.empty
+            and self.cell_diff.empty
+            and not self.only_left_cols
+            and not self.only_right_cols
+        )
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -211,6 +219,15 @@ def verify(
 
     left_n = normalize(left, key_cols, date_cols)
     right_n = normalize(right, key_cols, date_cols)
+
+    # 列差分（片側にしかない列）を先に検出しておく。
+    # 行・セル比較は共通列だけで行うが、列差分も結果として返す
+    only_left_cols = [c for c in left_n.columns if c not in right_n.columns]
+    only_right_cols = [c for c in right_n.columns if c not in left_n.columns]
+
+    missing_keys = [c for c in key_cols if c in only_left_cols or c in only_right_cols]
+    if missing_keys:
+        raise ValueError(f"突合キー列が片側にしか存在しません: {missing_keys}")
 
     # 左右に共通する列だけを対象にする（列順もそろう）
     common_cols = [c for c in left_n.columns if c in right_n.columns]
@@ -310,7 +327,9 @@ def verify(
         only_left=only_left,
         only_right=only_right,
         cell_diff=cell_diff,
-        fuzzy_matched=fuzzy_matched
+        fuzzy_matched=fuzzy_matched,
+        only_left_cols=only_left_cols,
+        only_right_cols=only_right_cols,
     )
 
 
@@ -340,6 +359,20 @@ def main() -> None:
     mark_ok = "✅"
     mark_ng = "⚠️"
     n = 20
+
+    mark = mark_ok if not result.only_left_cols else mark_ng
+    print(f"\n{mark} {LEFT_KEY} のみの列: {len(result.only_left_cols)}列")
+    i = 0
+    for col in result.only_left_cols:
+        i += 1
+        print(f"  {i}:  {col}")
+
+    mark = mark_ok if not result.only_right_cols else mark_ng
+    print(f"\n{mark} {RIGHT_KEY} のみの列: {len(result.only_right_cols)}列")
+    i = 0
+    for col in result.only_right_cols:
+        i += 1
+        print(f"  {i}:  {col}")
 
     mark = mark_ng
     if len(result.only_left) == 0:
