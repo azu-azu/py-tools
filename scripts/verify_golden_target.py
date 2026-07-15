@@ -191,7 +191,12 @@ def verify(
         key_cols: list[str],
         float_atol: float = FLOAT_ATOL,
 ) -> VerifyResult:
-    """2つのDataFrameを突合し、行差分・セル差分を返す"""
+    """2つのDataFrameを突合し、列差分・行差分・セル差分を返す
+
+    - 列差分: 片側にしかない列を only_left_cols / only_right_cols として返す
+    - 行・セル比較: 左右に共通する列だけを対象に行う
+    - 突合キー列が片側にしか無い場合は ValueError
+    """
 
     print(f"\n🔖 {LEFT_KEY}:")
     i = 0
