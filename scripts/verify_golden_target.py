@@ -196,6 +196,9 @@ def verify(
     - 列差分: 片側にしかない列を only_left_cols / only_right_cols として返す
     - 行・セル比較: 左右に共通する列だけを対象に行う
     - 突合キー列が片側にしか無い場合は ValueError
+    - key_cols が空の場合はキーによる行対応づけを行わず、Stage 1 で
+      完全一致しなかった残差をそのまま only_left / only_right として返す
+      （どの行同士が対応するか決められないため、セル差分は出さない）
     """
 
     print(f"\n🔖 {LEFT_KEY}:")
@@ -262,6 +265,20 @@ def verify(
     # 一致行を巻き込んだ波及が起きない。
     resid_left = resid_left.sort_values(sorted(common_cols)).reset_index(drop=True)
     resid_right = resid_right.sort_values(sorted(common_cols)).reset_index(drop=True)
+
+    # キー未指定なら Stage 2 のキー突合は行わない。
+    # 残差（Stage 1 で完全一致しなかった行）をそのまま行差分として返す。
+    # どの golden 行がどの target 行に対応するか決められないため、セル差分は出さない。
+    if not key_cols:
+        return VerifyResult(
+            only_left=resid_left,
+            only_right=resid_right,
+            cell_diff=pd.DataFrame(),
+            fuzzy_matched=pd.DataFrame(),
+            only_left_cols=only_left_cols,
+            only_right_cols=only_right_cols,
+        )
+
     resid_left["_seq"] = resid_left.groupby(key_cols, dropna=False).cumcount()
     resid_right["_seq"] = resid_right.groupby(key_cols, dropna=False).cumcount()
 
@@ -358,7 +375,13 @@ def main() -> None:
     left = read_csv(args.golden, "args.golden")
     right = read_csv(args.target, "args.target")
 
-    result = verify(left, right, key_cols=args.key)
+    # DEFAULT_KEYS の空文字プレースホルダ("")を除去する。
+    # 全部空ならキーなし突合（Stage 1 の完全一致のみ）になる。
+    key_cols = [c for c in args.key if c]
+    if not key_cols:
+        print("\nℹ️ 突合キー未指定: 完全一致行のみ突合し、残差は行差分として表示します")
+
+    result = verify(left, right, key_cols=key_cols)
 
     print(f"-- RUN --\n\n🎈 {__name__}\n")
     mark_ok = "✅"
@@ -385,8 +408,9 @@ def main() -> None:
     print(f"\n{mark} {LEFT_KEY} のみの行: {len(result.only_left)}行")
 
     if not result.only_left.empty:
-        my_columns = DEFAULT_KEYS
-        subset = result.only_left[my_columns]
+        # キー列があればキーだけ表示、無ければ全列表示にフォールバックする
+        my_columns = [c for c in key_cols if c in result.only_left.columns]
+        subset = result.only_left[my_columns] if my_columns else result.only_left
         if len(subset) > n:
             print(f"  = top{n} =")
         print(subset.head(n).to_string())
@@ -398,7 +422,7 @@ def main() -> None:
 
     if not result.only_right.empty:
         # only_right は target 側だけの行（左右サフィックス無しの素の列）
-        my_columns = list(dict.fromkeys(DEFAULT_KEYS + [c for c in EXTRA_COLS if c]))
+        my_columns = list(dict.fromkeys(key_cols + [c for c in EXTRA_COLS if c]))
         my_columns = [c for c in my_columns if c in result.only_right.columns]
         subset = result.only_right[my_columns] if my_columns else result.only_right
         if len(subset) > n:
