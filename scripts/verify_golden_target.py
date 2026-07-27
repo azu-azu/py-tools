@@ -245,6 +245,120 @@ def _ascii_signature(value: str) -> str:
 
 
 # ────────────────────────────────────────────────────────────────────
+# 文字化け行の吸収（キーなしモード用）
+
+def _absorb_garbled_rows(
+    resid_left: pd.DataFrame,
+    resid_right: pd.DataFrame,
+    common_cols: list[str],
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """文字化けだけが違う行を左右でペアにして差分から取り除く。
+
+    キーがあるモードでは、行をキーで対応づけてからセル単位で
+    signature比較を行うが、キーなしモードでは対応づけができない。
+
+    そこで、文字化け対象列をASCII英数字のsignatureへ置き換えたうえで
+    行単位の突合をやり直し、ペアになった行を差分から除外する。
+
+    戻り値は (only_left, only_right, fuzzy_matched)。
+    """
+    garbled_cols = [
+        col
+        for col in common_cols
+        if col in GARBLED_COLS
+    ]
+
+    if (
+        not garbled_cols
+        or resid_left.empty
+        or resid_right.empty
+    ):
+        return (
+            resid_left,
+            resid_right,
+            pd.DataFrame(),
+        )
+
+    left_sig = resid_left.copy()
+    right_sig = resid_right.copy()
+
+    for col in garbled_cols:
+        left_sig[col] = left_sig[col].map(_ascii_signature)
+        right_sig[col] = right_sig[col].map(_ascii_signature)
+
+    # signature置換で新たに重複した行も取り違えないよう出現順連番を振る
+    left_sig["_gseq"] = (
+        left_sig
+        .groupby(common_cols, dropna=False)
+        .cumcount()
+    )
+    right_sig["_gseq"] = (
+        right_sig
+        .groupby(common_cols, dropna=False)
+        .cumcount()
+    )
+
+    # 突合後に元の値へ戻れるよう行番号を持たせる
+    left_sig["_lrow"] = np.arange(len(left_sig))
+    right_sig["_rrow"] = np.arange(len(right_sig))
+
+    matched = left_sig.merge(
+        right_sig,
+        how="inner",
+        on=common_cols + ["_gseq"],
+    )
+
+    left_rows = matched["_lrow"].to_numpy()
+    right_rows = matched["_rrow"].to_numpy()
+
+    # ペアになった行のうち、実際に値が違うセルだけを記録する
+    fuzzy: list[pd.DataFrame] = []
+
+    for col in garbled_cols:
+        left_values = pd.Series(
+            resid_left[col].to_numpy()[left_rows]
+        )
+        right_values = pd.Series(
+            resid_right[col].to_numpy()[right_rows]
+        )
+
+        rescued_mask = (
+            left_values.astype(str)
+            != right_values.astype(str)
+        ).to_numpy()
+
+        if rescued_mask.any():
+            fuzzy_frame = pd.DataFrame(
+                {
+                    "column": col,
+                    LEFT_KEY: left_values[rescued_mask],
+                    RIGHT_KEY: right_values[rescued_mask],
+                }
+            )
+            fuzzy.append(fuzzy_frame.reset_index(drop=True))
+
+    fuzzy_matched = (
+        pd.concat(fuzzy, ignore_index=True)
+        if fuzzy
+        else pd.DataFrame()
+    )
+
+    only_left = (
+        resid_left
+        .drop(index=resid_left.index[left_rows])
+        .reset_index(drop=True)
+    )
+
+    only_right = (
+        resid_right
+        .drop(index=resid_right.index[right_rows])
+        .reset_index(drop=True)
+    )
+
+    return only_left, only_right, fuzzy_matched
+
+
+# ────────────────────────────────────────────────────────────────────
 # 結果の入れ物
 
 @dataclass(frozen=True)
@@ -396,11 +510,21 @@ def _verify(
     # キーなしモード
 
     if not key_cols:
+        (
+            keyless_left,
+            keyless_right,
+            keyless_fuzzy,
+        ) = _absorb_garbled_rows(
+            resid_left,
+            resid_right,
+            common_cols,
+        )
+
         return VerifyResult(
-            only_left=resid_left,
-            only_right=resid_right,
+            only_left=keyless_left,
+            only_right=keyless_right,
             cell_diff=pd.DataFrame(),
-            fuzzy_matched=pd.DataFrame(),
+            fuzzy_matched=keyless_fuzzy,
             only_left_cols=only_left_cols,
             only_right_cols=only_right_cols,
         )
