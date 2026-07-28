@@ -922,8 +922,7 @@ def run_verify(
 
     golden_path = _resolve_golden_path(golden_name)
 
-    print(f"-- RUN --\n\n🎈 {__name__}\n")
-    print(f"golden : {golden_path}")
+    print(f"-- RUN --\n\n🎈 {__name__}\n[golden] {golden_path}")
     print(f"target : {target_path}")
     print(
         "key    : "
