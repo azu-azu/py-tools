@@ -840,11 +840,14 @@ def _print_result(
         if len(result.cell_diff) > max_rows:
             print(f"  = top{max_rows} =")
 
-        print(
+        shown = (
             result.cell_diff
             .head(max_rows)
-            .to_string()
+            .reset_index(drop=True)
         )
+        shown.index += 1  # 表示の連番を1始まりにする
+
+        print(shown.to_string())
 
     # 文字化けと思われる差分
     unique_pairs = pd.DataFrame()
