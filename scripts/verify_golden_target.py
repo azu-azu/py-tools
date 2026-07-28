@@ -730,6 +730,27 @@ def _verify_files(
 # ────────────────────────────────────────────────────────────────────
 # 結果表示
 
+def _print_frame(
+    df: pd.DataFrame,
+    max_rows: int,
+) -> None:
+    """DataFrameの先頭を、1始まりの連番付きで表示する。
+
+    max_rows行を超える場合は、切り詰めた旨の見出しを添える。
+    """
+    if len(df) > max_rows:
+        print(f"  = top{max_rows} =")
+
+    shown = (
+        df
+        .head(max_rows)
+        .reset_index(drop=True)
+    )
+    shown.index += 1  # 表示の連番を1始まりにする
+
+    print(shown.to_string())
+
+
 def _print_result(
     result: VerifyResult,
     key_cols: list[str],
@@ -784,14 +805,7 @@ def _print_result(
             else result.only_left
         )
 
-        if len(subset) > max_rows:
-            print(f"  = top{max_rows} =")
-
-        print(
-            subset
-            .head(max_rows)
-            .to_string()
-        )
+        _print_frame(subset, max_rows)
 
     # targetにだけある行
     mark = mark_ok if result.only_right.empty else mark_ng
@@ -820,14 +834,7 @@ def _print_result(
             else result.only_right
         )
 
-        if len(subset) > max_rows:
-            print(f"  = top{max_rows} =")
-
-        print(
-            subset
-            .head(max_rows)
-            .to_string()
-        )
+        _print_frame(subset, max_rows)
 
     # セル差分
     mark = mark_ok if result.cell_diff.empty else mark_ng
@@ -837,14 +844,7 @@ def _print_result(
     )
 
     if not result.cell_diff.empty:
-        if len(result.cell_diff) > max_rows:
-            print(f"  = top{max_rows} =")
-
-        print(
-            result.cell_diff
-            .head(max_rows)
-            .to_string()
-        )
+        _print_frame(result.cell_diff, max_rows)
 
     # 文字化けと思われる差分
     unique_pairs = pd.DataFrame()
