@@ -787,11 +787,14 @@ def _print_result(
         if len(subset) > max_rows:
             print(f"  = top{max_rows} =")
 
-        print(
+        shown = (
             subset
             .head(max_rows)
-            .to_string()
+            .reset_index(drop=True)
         )
+        shown.index += 1  # 表示の連番を1始まりにする
+
+        print(shown.to_string())
 
     # targetにだけある行
     mark = mark_ok if result.only_right.empty else mark_ng
@@ -823,11 +826,14 @@ def _print_result(
         if len(subset) > max_rows:
             print(f"  = top{max_rows} =")
 
-        print(
+        shown = (
             subset
             .head(max_rows)
-            .to_string()
+            .reset_index(drop=True)
         )
+        shown.index += 1  # 表示の連番を1始まりにする
+
+        print(shown.to_string())
 
     # セル差分
     mark = mark_ok if result.cell_diff.empty else mark_ng
