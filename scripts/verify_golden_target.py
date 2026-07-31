@@ -56,8 +56,8 @@ EXTRA_COLS: list[str] = []
 # ────────────────────────────────────────────────────────────────────
 # 比較設定
 
-LEFT_KEY = "ETLツール"
-RIGHT_KEY = "Python"
+LEFT_KEY = "golden"
+RIGHT_KEY = "target"
 
 FLOAT_ATOL: float = 1e-9
 
