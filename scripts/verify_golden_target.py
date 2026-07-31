@@ -1,11 +1,15 @@
-"""ETLツール出力（golden）とpandas出力（target）の突合スクリプト。"""
+"""2つのCSV出力を突合するスクリプト。
+
+基準となる正解データをgolden、検証対象の出力をtargetと呼ぶ。
+
+移行前後の出力比較や、リファクタ前後の回帰確認などに使う。
+"""
 
 from __future__ import annotations
 
 import argparse
-import logging
 import re
-import sys
+import traceback
 import unicodedata
 import warnings
 from dataclasses import dataclass
@@ -15,18 +19,26 @@ import numpy as np
 import pandas as pd
 
 
-logger = logging.getLogger(__name__)
-
-
 # ────────────────────────────────────────────────────────────────────
 # デフォルト設定
 
 DATA_DIR = Path(__file__).resolve().parents[1]
 
+# 以下はサンプル値
+# 実際に使うgolden/target/キー列に合わせて手動で書き換える
+
+# golden CSVのstem
+# 引数を省略したときに使われる
 DEFAULT_GOLDEN_NAME = "golden"
+
+# golden CSVを探すディレクトリ
 DEFAULT_GOLDEN_DIR = DATA_DIR / "sample"
+
+# target CSVのデフォルトパス
 DEFAULT_TARGET = DATA_DIR / "output" / "debug" / "_test.csv"
 
+# 突合キー列
+# 空リストにするとキーなしモードで比較する
 DEFAULT_KEYS: list[str] = ["ID"]
 
 
@@ -35,10 +47,7 @@ DEFAULT_KEYS: list[str] = ["ID"]
 
 # 文字化けしているカラム
 # 文字化けによるdiff検出を避けたい場合は、該当カラムを指定する
-GARBLED_COLS: list[str] = [
-    "カラムA",
-    "カラムB",
-]
+GARBLED_COLS: list[str] = []
 
 # 日付型カラム
 # mm/dd と m/d の表示違いによるdiff検出を避けたい場合に指定する
@@ -52,8 +61,8 @@ EXTRA_COLS: list[str] = []
 # ────────────────────────────────────────────────────────────────────
 # 比較設定
 
-LEFT_KEY = "ETLツール"
-RIGHT_KEY = "Python"
+LEFT_KEY = "golden"
+RIGHT_KEY = "target"
 
 FLOAT_ATOL: float = 1e-9
 
@@ -98,6 +107,26 @@ def _read_csv(path: Path, label: str) -> pd.DataFrame:
 
 
 # ────────────────────────────────────────────────────────────────────
+# 文字列カラムの選択
+
+def _text_cols(df: pd.DataFrame) -> pd.Index:
+    """文字列として扱うカラム名を返す。
+
+    文字列カラムのdtypeは、pandas 2ではobject、pandas 3ではstrになる。
+
+    pandas 3のinclude="object"は後方互換でstrも拾うが非推奨警告が出る。
+    一方、pandas 2のinclude="str"はTypeErrorになる。
+
+    そのため["object", "str"]を先に試し、
+    弾かれたpandas 2ではobjectのみにフォールバックする。
+    """
+    try:
+        return df.select_dtypes(include=["object", "str"]).columns
+    except TypeError:
+        return df.select_dtypes(include="object").columns
+
+
+# ────────────────────────────────────────────────────────────────────
 # 日付列の自動判定
 
 def _detect_date_cols(
@@ -105,7 +134,7 @@ def _detect_date_cols(
     min_ratio: float = 0.95,
     sample: int = 2000,
 ) -> list[str]:
-    """object型カラムのうち、値の大半が日付として解釈できる列名を返す。
+    """文字列カラムのうち、値の大半が日付として解釈できる列名を返す。
 
     左右で個別に判定すると非対称になり、偽差分の原因になるため、
     golden側だけに対して呼び出す。
@@ -114,7 +143,7 @@ def _detect_date_cols(
     """
     cols: list[str] = []
 
-    for col in df.select_dtypes(include="object").columns:
+    for col in _text_cols(df):
         values = df[col].dropna().astype(str).str.strip()
         values = values[values != ""]
 
@@ -168,6 +197,12 @@ def _resolve_golden_path(golden_name: str | None) -> Path:
     resolved_name = golden_name or DEFAULT_GOLDEN_NAME
     stem = Path(resolved_name).stem
 
+    if not stem:
+        raise ValueError(
+            "golden CSVの名前が空です。"
+            "引数で指定するか、DEFAULT_GOLDEN_NAMEを設定してください"
+        )
+
     return DEFAULT_GOLDEN_DIR / f"{stem}.csv"
 
 
@@ -182,14 +217,14 @@ def _normalize(
     normalized = df.copy()
 
     # 文字列カラムの前後空白を除去
-    for col in normalized.select_dtypes(include="object").columns:
+    for col in _text_cols(normalized):
         normalized[col] = normalized[col].str.strip()
 
     # NaNと空文字を統一
     # 数値列まで空文字で埋めるとobject型になり、
     # np.iscloseによる数値比較が効かなくなるため対象外とする
-    object_cols = normalized.select_dtypes(include="object").columns
-    normalized[object_cols] = normalized[object_cols].fillna("")
+    text_cols = _text_cols(normalized)
+    normalized[text_cols] = normalized[text_cols].fillna("")
 
     # 日付カラムを統一フォーマットに正規化
     for col in date_cols:
@@ -222,8 +257,8 @@ def _normalize(
         normalized[col] = parsed.dt.strftime("%Y-%m-%d")
 
     # 日付正規化によって新たに発生したNaNを吸収
-    object_cols = normalized.select_dtypes(include="object").columns
-    normalized[object_cols] = normalized[object_cols].fillna("")
+    text_cols = _text_cols(normalized)
+    normalized[text_cols] = normalized[text_cols].fillna("")
 
     # 列名順による決定的な並び替え
     if len(normalized.columns) > 0:
@@ -892,10 +927,9 @@ def run_verify(
     golden_name:
         golden CSVのstem。
 
-        Noneまたは空文字の場合はDEFAULT_GOLDEN_NAMEを使用する。
+        DEFAULT_GOLDEN_DIR配下から、この名前の.csvを探す。
 
-        例:
-            "golden"
+        Noneまたは空文字の場合はDEFAULT_GOLDEN_NAMEを使用する。
 
     key_cols:
         突合キー列。
@@ -906,8 +940,8 @@ def run_verify(
         []:
             キーなしモードで比較する。
 
-        ["ID"]:
-            IDをキーとして比較する。
+        列名のリスト:
+            指定した列をキーとして比較する。
 
     target_path:
         target CSVのパス。
@@ -998,13 +1032,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception:
-        logger.exception(
-            "予期しないエラーが発生しました"
-        )
-        print(
-            "\n❌ Exit code: 1",
-            file=sys.stderr,
-        )
+        print(traceback.format_exc(), end="")
+        print("\n❌ Exit code: 1")
         raise SystemExit(1)
     else:
         print("\n✅ Exit code: 0")
