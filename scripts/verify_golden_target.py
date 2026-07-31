@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import re
-import sys
+import traceback
 import unicodedata
 import warnings
 from dataclasses import dataclass
@@ -13,9 +12,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
-
-logger = logging.getLogger(__name__)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -998,13 +994,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception:
-        logger.exception(
-            "予期しないエラーが発生しました"
-        )
-        print(
-            "\n❌ Exit code: 1",
-            file=sys.stderr,
-        )
+        print(traceback.format_exc(), end="")
+        print("\n❌ Exit code: 1")
         raise SystemExit(1)
     else:
         print("\n✅ Exit code: 0")
