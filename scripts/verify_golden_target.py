@@ -19,6 +19,13 @@ import pandas as pd
 
 DATA_DIR = Path(__file__).resolve().parents[1]
 
+# 以下はサンプル値
+# 実際に使うgolden/target/キー列に合わせて手動で書き換える
+
+# golden CSVのstem
+# 引数を省略したときに使われる
+DEFAULT_GOLDEN_NAME = "golden"
+
 # golden CSVを探すディレクトリ
 DEFAULT_GOLDEN_DIR = DATA_DIR / "sample"
 
@@ -26,8 +33,8 @@ DEFAULT_GOLDEN_DIR = DATA_DIR / "sample"
 DEFAULT_TARGET = DATA_DIR / "output" / "debug" / "_test.csv"
 
 # 突合キー列
-# 空リストの場合はキーなしモードで比較する
-DEFAULT_KEYS: list[str] = []
+# 空リストにするとキーなしモードで比較する
+DEFAULT_KEYS: list[str] = ["ID"]
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -177,12 +184,19 @@ def _resolve_date_cols(reference: pd.DataFrame) -> list[str]:
 # ────────────────────────────────────────────────────────────────────
 # パス解決
 
-def _resolve_golden_path(golden_name: str) -> Path:
-    """goldenのstemから、固定フォルダ内のCSVパスを作る。"""
-    stem = Path(golden_name).stem
+def _resolve_golden_path(golden_name: str | None) -> Path:
+    """goldenのstemから、固定フォルダ内のCSVパスを作る。
+
+    Noneまたは空文字の場合は、DEFAULT_GOLDEN_NAMEを使用する。
+    """
+    resolved_name = golden_name or DEFAULT_GOLDEN_NAME
+    stem = Path(resolved_name).stem
 
     if not stem:
-        raise ValueError("golden CSVの名前を指定してください")
+        raise ValueError(
+            "golden CSVの名前が空です。"
+            "引数で指定するか、DEFAULT_GOLDEN_NAMEを設定してください"
+        )
 
     return DEFAULT_GOLDEN_DIR / f"{stem}.csv"
 
@@ -896,7 +910,7 @@ def _print_result(
 # 公開関数
 
 def run_verify(
-    golden_name: str,
+    golden_name: str | None = None,
     key_cols: list[str] | None = None,
     *,
     target_path: Path = DEFAULT_TARGET,
@@ -909,6 +923,8 @@ def run_verify(
         golden CSVのstem。
 
         DEFAULT_GOLDEN_DIR配下から、この名前の.csvを探す。
+
+        Noneまたは空文字の場合はDEFAULT_GOLDEN_NAMEを使用する。
 
     key_cols:
         突合キー列。
@@ -968,9 +984,11 @@ def main() -> None:
 
     parser.add_argument(
         "golden_name",
+        nargs="?",
+        default=None,
         help=(
             "golden CSVのstem。"
-            f"{DEFAULT_GOLDEN_DIR}配下から探す"
+            f"省略時は{DEFAULT_GOLDEN_NAME}"
         ),
     )
 
