@@ -19,11 +19,15 @@ import pandas as pd
 
 DATA_DIR = Path(__file__).resolve().parents[1]
 
-DEFAULT_GOLDEN_NAME = "golden"
+# golden CSVを探すディレクトリ
 DEFAULT_GOLDEN_DIR = DATA_DIR / "sample"
+
+# target CSVのデフォルトパス
 DEFAULT_TARGET = DATA_DIR / "output" / "debug" / "_test.csv"
 
-DEFAULT_KEYS: list[str] = ["ID"]
+# 突合キー列
+# 空リストの場合はキーなしモードで比較する
+DEFAULT_KEYS: list[str] = []
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -31,10 +35,7 @@ DEFAULT_KEYS: list[str] = ["ID"]
 
 # 文字化けしているカラム
 # 文字化けによるdiff検出を避けたい場合は、該当カラムを指定する
-GARBLED_COLS: list[str] = [
-    "カラムA",
-    "カラムB",
-]
+GARBLED_COLS: list[str] = []
 
 # 日付型カラム
 # mm/dd と m/d の表示違いによるdiff検出を避けたい場合に指定する
@@ -176,13 +177,12 @@ def _resolve_date_cols(reference: pd.DataFrame) -> list[str]:
 # ────────────────────────────────────────────────────────────────────
 # パス解決
 
-def _resolve_golden_path(golden_name: str | None) -> Path:
-    """goldenのstemから、固定フォルダ内のCSVパスを作る。
+def _resolve_golden_path(golden_name: str) -> Path:
+    """goldenのstemから、固定フォルダ内のCSVパスを作る。"""
+    stem = Path(golden_name).stem
 
-    Noneまたは空文字の場合は、DEFAULT_GOLDEN_NAMEを使用する。
-    """
-    resolved_name = golden_name or DEFAULT_GOLDEN_NAME
-    stem = Path(resolved_name).stem
+    if not stem:
+        raise ValueError("golden CSVの名前を指定してください")
 
     return DEFAULT_GOLDEN_DIR / f"{stem}.csv"
 
@@ -896,7 +896,7 @@ def _print_result(
 # 公開関数
 
 def run_verify(
-    golden_name: str | None = None,
+    golden_name: str,
     key_cols: list[str] | None = None,
     *,
     target_path: Path = DEFAULT_TARGET,
@@ -908,10 +908,7 @@ def run_verify(
     golden_name:
         golden CSVのstem。
 
-        Noneまたは空文字の場合はDEFAULT_GOLDEN_NAMEを使用する。
-
-        例:
-            "golden"
+        DEFAULT_GOLDEN_DIR配下から、この名前の.csvを探す。
 
     key_cols:
         突合キー列。
@@ -922,8 +919,8 @@ def run_verify(
         []:
             キーなしモードで比較する。
 
-        ["ID"]:
-            IDをキーとして比較する。
+        列名のリスト:
+            指定した列をキーとして比較する。
 
     target_path:
         target CSVのパス。
@@ -971,11 +968,9 @@ def main() -> None:
 
     parser.add_argument(
         "golden_name",
-        nargs="?",
-        default=None,
         help=(
             "golden CSVのstem。"
-            f"省略時は{DEFAULT_GOLDEN_NAME}"
+            f"{DEFAULT_GOLDEN_DIR}配下から探す"
         ),
     )
 
