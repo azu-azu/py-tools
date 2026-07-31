@@ -1,4 +1,9 @@
-"""ETLツール出力（golden）とpandas出力（target）の突合スクリプト。"""
+"""2つのCSV出力を突合するスクリプト。
+
+基準となる正解データをgolden、検証対象の出力をtargetと呼ぶ。
+
+移行前後の出力比較や、リファクタ前後の回帰確認などに使う。
+"""
 
 from __future__ import annotations
 
