@@ -21,9 +21,9 @@ CLI 引数が config.ini より優先される。
 
 ```ini
 [default]
-encoding = utf-8
 folder = C:\Users\you\data   # filename only 指定時の base dir
 file = sample.csv            # filename only → folder と結合。フルパスなら folder を無視
+display_rows = 30            # 表示する最大行数。省略時は全行
 
 [columns]
 # 表示する列名をカンマ区切りで指定（fuzzy match）
@@ -38,11 +38,13 @@ category =
 
 | 設定 | 説明 |
 |---|---|
-| `[default] encoding` | CSV の文字コード（デフォルト: `utf-8`） |
 | `[default] folder` | filename only 指定時の base directory |
 | `[default] file` | デフォルトの CSV パス。CLI 引数で上書き可能 |
+| `[default] display_rows` | 表示する最大行数。省略時は全行表示 |
 | `[columns] names` | 表示列をカンマ区切りで指定。省略時は全列表示 |
 | `[filter]` | 行の絞り込み条件。省略時は全行表示 |
+
+文字コードは設定不要で、`utf-8` → `cp932` の順に自動判定する。
 
 ### パス解決の優先順位
 
