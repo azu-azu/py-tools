@@ -5,6 +5,7 @@ import csv
 import configparser
 import importlib.util
 import logging
+import re
 import unicodedata
 from datetime import datetime
 from difflib import get_close_matches
@@ -24,7 +25,7 @@ LATEST_BY_CHOICES = ("mtime", "name")
 
 _DEFAULT_CONFIG = {
     "columns": [], "filters": {}, "file": None, "folder": None,
-    "max_rows": None, "latest_by": "mtime",
+    "max_rows": None, "latest_by": "mtime", "sort": [],
 }
 
 
@@ -54,6 +55,8 @@ def load_config() -> dict:
             f"invalid latest_by: {latest_by!r} (expected one of {', '.join(LATEST_BY_CHOICES)})"
         )
 
+    sort_keys = parse_sort_keys(default.get("sort", ""))
+
     columns: list[str] = []
     if parser.has_section("columns"):
         raw = parser["columns"].get("names", "")
@@ -65,8 +68,60 @@ def load_config() -> dict:
 
     return {
         "columns": columns, "filters": filters, "file": file_path, "folder": folder,
-        "max_rows": max_rows, "latest_by": latest_by,
+        "max_rows": max_rows, "latest_by": latest_by, "sort": sort_keys,
     }
+
+
+def parse_sort_keys(raw: str) -> list[tuple[str, bool]]:
+    """`category, -id` → [("category", False), ("id", True)]。bool は降順かどうか。
+
+    降順は `-id` と `id:desc` の両方で書ける。CLI では argparse が先頭の `-` を
+    オプション名と誤認するため（`-s -id` はエラー）、`id:desc` の方が打ちやすい。
+    """
+    keys: list[tuple[str, bool]] = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+
+        desc = token.startswith("-")
+        if desc:
+            token = token[1:].strip()
+
+        # 末尾が :asc / :desc のときだけ方向指定とみなす。
+        # `time:stamp` のような列名をうっかり壊さないため
+        name, _, suffix = token.rpartition(":")
+        if suffix.strip().lower() in ("asc", "desc") and name.strip():
+            desc = suffix.strip().lower() == "desc"
+            token = name.strip()
+
+        if token:
+            keys.append((token, desc))
+    return keys
+
+
+def natural_key(value: str) -> tuple:
+    """数字部分を数値として比較するキー。`_2` が `_10` より前に来る。"""
+    return tuple(
+        (1, int(part), "") if part.isdigit() else (0, 0, part)
+        for part in re.split(r"(\d+)", value)
+    )
+
+
+def sort_rows(
+    headers: list[str], rows: list[list[str]], sort_keys: list[tuple[str, bool]]
+) -> list[list[str]]:
+    # Python のソートは安定なので、優先度の低いキーから順に掛ければ多段ソートになる
+    for col_name, desc in reversed(sort_keys):
+        matched = fuzzy_match(col_name, headers)
+        if matched is None:
+            logger.warning("sort column '%s' not found, skipping", col_name)
+            continue
+        idx = headers.index(matched)
+        rows = sorted(
+            rows, key=lambda r: natural_key(r[idx] if idx < len(r) else ""), reverse=desc
+        )
+    return rows
 
 
 def latest_csv(folder: Path, latest_by: str = "mtime") -> Path:
@@ -305,6 +360,10 @@ def main() -> None:
         action="store_true",
         help="列名だけを表示して終了する（filter・Excel 出力は行わない）",
     )
+    parser.add_argument(
+        "-s", "--sort", default=None,
+        help="並び替える列名。降順は先頭に - を付ける。複数キーはカンマ区切り（例: -s 'category, -id'）",
+    )
     args = parser.parse_args()
 
     cfg = load_config()
@@ -339,6 +398,12 @@ def main() -> None:
         conditions = ", ".join(f"{k}={v!r}" for k, v in filters.items())
         print(f"該当なし: {conditions}")
         return
+
+    # 表示しない列でも並び替えられるよう、列を絞る前にソートする
+    sort_keys = parse_sort_keys(args.sort) if args.sort else cfg["sort"]
+    if sort_keys:
+        rows = sort_rows(all_headers, rows, sort_keys)
+
     headers, rows = select_columns(all_headers, rows, cfg["columns"])
     total = len(rows)
     display_rows = cfg["max_rows"]

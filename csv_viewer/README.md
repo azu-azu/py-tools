@@ -47,6 +47,7 @@ folder = C:\Users\you\data   # filename only 指定時の base dir
 file = sample.csv            # filename only → folder と結合。フルパスなら folder を無視
                              # 空にすると folder 内で1番新しい .csv を自動選択
 display_rows = 30            # 表示する最大行数。省略時は全行
+sort = id                    # 並び替える列。降順は -id。省略時は CSV の並び順
 latest_by = mtime            # 自動選択の基準。mtime（デフォルト） or name
 
 [columns]
@@ -65,6 +66,7 @@ category =
 | `[default] folder` | filename only 指定時の base directory |
 | `[default] file` | デフォルトの CSV パス。CLI 引数で上書き可能 |
 | `[default] display_rows` | 表示する最大行数。省略時は全行表示 |
+| `[default] sort` | 並び替える列。省略時は CSV の並び順のまま |
 | `[default] latest_by` | 最新ファイル自動選択の基準。`mtime`（デフォルト） or `name` |
 | `[columns] names` | 表示列をカンマ区切りで指定。省略時は全列表示 |
 | `[filter]` | 行の絞り込み条件。列名は完全一致、値は部分一致。省略時は全行表示 |
@@ -117,6 +119,31 @@ selected: C:\Users\you\data\sales_0805.csv  (2026-08-05 09:12)
 | `.csv` が0件 | `no .csv found in <folder>` で終了 |
 
 更新日時はダウンロード直後なら正確だが、コピーや zip 展開で元の日時が保たれないと崩れる。その場合は `latest_by = name` の方が安定する。
+
+### 並び替え
+
+省略時は CSV の並び順のまま。`sort` を指定すると並び替える。
+
+```bash
+csvview -s id <file.csv>              # 昇順
+csvview -s id:desc <file.csv>         # 降順
+csvview -s "grp, qty:desc" <file.csv> # 多段（grp 昇順 → 同値内で qty 降順）
+```
+```ini
+[default]
+sort = id        # 降順は -id。多段は sort = grp, -qty
+```
+
+CLI 引数が config.ini より優先される。表示しない列（`[columns] names` で除外した列）でも並び替えのキーにできる。列名は `[columns] names` と同じ fuzzy match で解決する。
+
+**数字は数値として比較する**（自然順）。単純な文字列ソートで起きる並びの崩れを避けるため。
+
+| | 自然順（このツール） | 単純な文字列ソート |
+|---|---|---|
+| `AAA_1, AAA_2, AAA_10` | `_1, _2, _10` | `_1, _10, _2` |
+| `3, 9, 20, 100` | `3, 9, 20, 100` | `100, 20, 3, 9` |
+
+降順の書き方は `-id` と `id:desc` のどちらでもよい。ただし CLI では `-s -id` が argparse にオプション名と誤認されてエラーになるため、`-s id:desc` か `--sort=-id` と書く。config.ini なら `sort = -id` で問題ない。
 
 ### filter の一致ルール
 
