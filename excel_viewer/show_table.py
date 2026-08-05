@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import configparser
+import unicodedata
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -63,6 +64,21 @@ def read_sheet(
     return rows
 
 
+def display_width(text: str) -> int:
+    """端末上の表示幅。全角（W/F）は2桁、結合文字は0桁として数える。"""
+    width = 0
+    for ch in text:
+        if unicodedata.combining(ch):
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return width
+
+
+def pad(text: str, width: int) -> str:
+    """display_width 基準で右側を空白埋めする（str.ljust の全角対応版）。"""
+    return text + " " * max(0, width - display_width(text))
+
+
 def format_table(rows: list[list[str]]) -> str:
     if not rows:
         return "(empty)"
@@ -71,10 +87,10 @@ def format_table(rows: list[list[str]]) -> str:
     for r in rows:
         r.extend([""] * (col_count - len(r)))
 
-    widths = [max(len(r[i]) for r in rows) for i in range(col_count)]
+    widths = [max(display_width(r[i]) for r in rows) for i in range(col_count)]
     lines = []
     for j, row in enumerate(rows):
-        line = " | ".join(cell.ljust(w) for cell, w in zip(row, widths))
+        line = " | ".join(pad(cell, w) for cell, w in zip(row, widths))
         lines.append(line)
         if j == 0:
             lines.append("-+-".join("-" * w for w in widths))

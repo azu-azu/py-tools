@@ -5,6 +5,7 @@ import csv
 import configparser
 import importlib.util
 import logging
+import unicodedata
 from datetime import datetime
 from difflib import get_close_matches
 from pathlib import Path
@@ -211,6 +212,21 @@ def select_columns(
     return matched_headers, selected_rows
 
 
+def display_width(text: str) -> int:
+    """端末上の表示幅。全角（W/F）は2桁、結合文字は0桁として数える。"""
+    width = 0
+    for ch in text:
+        if unicodedata.combining(ch):
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return width
+
+
+def pad(text: str, width: int) -> str:
+    """display_width 基準で右側を空白埋めする（str.ljust の全角対応版）。"""
+    return text + " " * max(0, width - display_width(text))
+
+
 def format_table(headers: list[str], rows: list[list[str]]) -> str:
     formatted_rows = [[display_value(c) for c in r] for r in rows]
     all_rows = [headers] + formatted_rows
@@ -219,12 +235,15 @@ def format_table(headers: list[str], rows: list[list[str]]) -> str:
         return "(no data)"
 
     col_count = len(headers)
-    widths = [max(len(r[i]) if i < len(r) else 0 for r in all_rows) for i in range(col_count)]
+    widths = [
+        max(display_width(r[i]) if i < len(r) else 0 for r in all_rows)
+        for i in range(col_count)
+    ]
 
     lines = []
     for j, row in enumerate(all_rows):
         line = " | ".join(
-            (row[i] if i < len(row) else "").ljust(widths[i]) for i in range(col_count)
+            pad(row[i] if i < len(row) else "", widths[i]) for i in range(col_count)
         )
         lines.append(line)
         if j == 0:
