@@ -25,7 +25,7 @@ LATEST_BY_CHOICES = ("mtime", "name")
 
 _DEFAULT_CONFIG = {
     "columns": [], "filters": {}, "file": None, "folder": None,
-    "max_rows": None, "latest_by": "mtime", "sort": [],
+    "max_rows": None, "latest_by": "mtime", "sort": [], "arg_filter": None,
 }
 
 
@@ -56,6 +56,7 @@ def load_config() -> dict:
         )
 
     sort_keys = parse_sort_keys(default.get("sort", ""))
+    arg_filter: str | None = default.get("arg_filter") or None
 
     columns: list[str] = []
     if parser.has_section("columns"):
@@ -69,7 +70,37 @@ def load_config() -> dict:
     return {
         "columns": columns, "filters": filters, "file": file_path, "folder": folder,
         "max_rows": max_rows, "latest_by": latest_by, "sort": sort_keys,
+        "arg_filter": arg_filter,
     }
+
+
+def split_positional(
+    arg: Path | None, folder: Path | None
+) -> tuple[Path | None, str | None]:
+    """位置引数を (ファイル/フォルダ, filter 値) に振り分ける。
+
+    パスとして存在すればファイル扱い、存在しなければ filter 値扱いにする。
+    """
+    if arg is None:
+        return None, None
+    if arg.exists():
+        return arg, None
+    # filename only なら folder と結合した先も見る
+    if folder and arg.parent == Path(".") and (folder / arg).exists():
+        return arg, None
+    return None, str(arg)
+
+
+def resolve_arg_filter_key(arg_filter: str | None, filters: dict[str, str]) -> str:
+    """位置引数で上書きする filter 列名を決める。"""
+    if arg_filter:
+        return arg_filter
+    if len(filters) == 1:
+        return next(iter(filters))
+    raise SystemExit(
+        "位置引数を filter 値として使うには [default] arg_filter = <列名> の設定が必要です"
+        f"（[filter] が1件だけならその列が使われますが、現在は {len(filters)} 件）"
+    )
 
 
 def parse_sort_keys(raw: str) -> list[tuple[str, bool]]:
@@ -353,7 +384,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="CSV table viewer with fuzzy column selection")
     parser.add_argument(
         "file", type=Path, nargs="?",
-        help="path to .csv, or a folder to read its newest .csv (overrides config.ini)",
+        help=(
+            "path to .csv, or a folder to read its newest .csv (overrides config.ini). "
+            "パスとして存在しない文字列は [default] arg_filter の列の filter 値として扱う"
+        ),
     )
     parser.add_argument(
         "-l", "--list-columns",
@@ -374,7 +408,10 @@ def main() -> None:
     else:
         folder = None
 
-    raw: Path | None = args.file or (Path(cfg["file"]) if cfg["file"] else None)
+    # 位置引数はパスとして存在すればファイル、しなければ filter 値の指定
+    arg_file, arg_filter_value = split_positional(args.file, folder)
+
+    raw: Path | None = arg_file or (Path(cfg["file"]) if cfg["file"] else None)
     if raw is None and folder is None:
         parser.error(
             "file not specified: pass as argument or set [default] file = ... "
@@ -392,7 +429,14 @@ def main() -> None:
         return
 
     all_headers, rows = read_csv(file_path)
-    filters = resolve_filter_columns(all_headers, cfg["filters"])
+
+    filters_cfg = dict(cfg["filters"])
+    if arg_filter_value is not None:
+        key = resolve_arg_filter_key(cfg["arg_filter"], filters_cfg)
+        filters_cfg[key] = arg_filter_value  # config の値を強制上書き
+        print(f"filter: {key} = {arg_filter_value}\n")
+
+    filters = resolve_filter_columns(all_headers, filters_cfg)
     rows = apply_filters(all_headers, rows, filters)
     if not rows and filters:
         conditions = ", ".join(f"{k}={v!r}" for k, v in filters.items())

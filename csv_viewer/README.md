@@ -48,6 +48,7 @@ file = sample.csv            # filename only → folder と結合。フルパス
                              # 空にすると folder 内で1番新しい .csv を自動選択
 display_rows = 30            # 表示する最大行数。省略時は全行
 sort = id                    # 並び替える列。降順は -id。省略時は CSV の並び順
+arg_filter = id              # 位置引数で [filter] のこの列を上書きする
 latest_by = mtime            # 自動選択の基準。mtime（デフォルト） or name
 
 [columns]
@@ -67,6 +68,7 @@ category =
 | `[default] file` | デフォルトの CSV パス。CLI 引数で上書き可能 |
 | `[default] display_rows` | 表示する最大行数。省略時は全行表示 |
 | `[default] sort` | 並び替える列。省略時は CSV の並び順のまま |
+| `[default] arg_filter` | 位置引数の文字列で上書きする `[filter]` の列名 |
 | `[default] latest_by` | 最新ファイル自動選択の基準。`mtime`（デフォルト） or `name` |
 | `[columns] names` | 表示列をカンマ区切りで指定。省略時は全列表示 |
 | `[filter]` | 行の絞り込み条件。列名は完全一致、値は部分一致。省略時は全行表示 |
@@ -119,6 +121,34 @@ selected: C:\Users\you\data\sales_0805.csv  (2026-08-05 09:12)
 | `.csv` が0件 | `no .csv found in <folder>` で終了 |
 
 更新日時はダウンロード直後なら正確だが、コピーや zip 展開で元の日時が保たれないと崩れる。その場合は `latest_by = name` の方が安定する。
+
+### 引数で filter 値を上書きする
+
+`[default] arg_filter` に列名を書いておくと、位置引数の文字列でその列の filter 値を上書きできる。config.ini を編集せずに対象を切り替えたいとき用。
+
+```ini
+[default]
+file = data.csv
+arg_filter = id
+
+[filter]
+id = AAA123456
+```
+```bash
+$ csvview            # config どおり id = AAA123456
+$ csvview BBB12345   # id = BBB12345 で強制上書き
+filter: id = BBB12345
+
+id         | val
+-----------+----
+BBB12345_1 | c
+```
+
+`[filter]` にその列が無ければ新しく追加される。`arg_filter` 未設定でも `[filter]` が1件だけならその列が対象になる。2件以上あって `arg_filter` が無い場合はエラーで止まる（どれを上書きすべきか決められないため）。
+
+**位置引数がファイルか filter 値かの判定**: パスとして存在すればファイル（またはフォルダ）、存在しなければ filter 値として扱う。`folder` と結合した先も見るので、`csvview data.csv` のようなファイル名だけの指定がフィルタ値と誤認されることはない。
+
+filter 値と解釈したときは上の例のように `filter: id = BBB12345` と表示する。パスを打ち間違えたときに、黙って filter 値として扱われて `該当なし` になるのを見分けるため。
 
 ### 並び替え
 
