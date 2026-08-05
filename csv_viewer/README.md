@@ -127,9 +127,11 @@ filter列 'sttus' が見つかりません。候補 (1-5 / 7):
 
 ## Dependencies
 
+**表示・列名一覧・filter・最新ファイル選択は標準ライブラリだけで動く。** openpyxl は Excel 書き出しにのみ必要で、未インストールなら表示はそのまま行われ `Excel: skipped — ...` と出るだけ。`csv_viewer/show_table.py` 単体をコピーしても動作する。
+
 ```bash
 pip install -e .                            # repo root。csvview コマンドも入る
-pip install -r csv_viewer/requirements.txt  # 依存だけ入れる場合
+pip install -r csv_viewer/requirements.txt  # openpyxl だけ入れる場合
 ```
 
 表示結果は `output/` 配下に Excel（`columns` シート + `data` シート、auto-filter 付き）としても書き出される。

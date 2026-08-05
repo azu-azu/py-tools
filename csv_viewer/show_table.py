@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import csv
 import configparser
+import importlib.util
 import logging
 from datetime import datetime
 from difflib import get_close_matches
 from pathlib import Path
 
-from openpyxl import Workbook
+# openpyxl は Excel 書き出しでしか使わないので write_excel() 内で import する。
+# 未インストールでも表示・列名一覧・filter は標準ライブラリだけで動く。
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +241,9 @@ def write_excel(
     rows: list[list[str]],
     src_path: Path,
 ) -> Path:
+    """Excel を書き出してパスを返す。openpyxl が無ければ ImportError。"""
+    from openpyxl import Workbook
+
     OUTPUT_DIR.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%y%m%d-%H%M%S")
     out_path = OUTPUT_DIR / f"{src_path.stem}_{ts}.xlsx"
@@ -316,8 +321,13 @@ def main() -> None:
         summary += f" (showing first {display_rows})"
     print(f"\n{summary}")
 
-    out_path = write_excel(all_headers, headers, rows, file_path)
-    print(f"Excel: {out_path}")
+    # 表示は成功しているので、openpyxl が無くても Excel だけ諦めて終わる。
+    # find_spec で存在だけ確認する（try/except ImportError だと openpyxl 内部の
+    # ImportError まで「未インストール」と誤って報告してしまう）
+    if importlib.util.find_spec("openpyxl") is None:
+        print("Excel: skipped — openpyxl が未インストール（pip install openpyxl で有効になる）")
+    else:
+        print(f"Excel: {write_excel(all_headers, headers, rows, file_path)}")
 
 
 if __name__ == "__main__":
