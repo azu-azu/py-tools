@@ -17,11 +17,17 @@ OUTPUT_DIR = CONFIG_PATH.parent / "output"
 
 NULL_LIKE = {"null", "none", "n/a", r"\n", "na"}
 ENCODING_CANDIDATES = ["utf-8", "cp932"]
+LATEST_BY_CHOICES = ("mtime", "name")
+
+_DEFAULT_CONFIG = {
+    "columns": [], "filters": {}, "file": None, "folder": None,
+    "max_rows": None, "latest_by": "mtime",
+}
 
 
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
-        return {"columns": [], "filters": {}, "file": None, "folder": None, "max_rows": None}
+        return dict(_DEFAULT_CONFIG)
 
     parser = configparser.ConfigParser()
     parser.optionxform = str  # キー名の大文字小文字を保持
@@ -32,6 +38,12 @@ def load_config() -> dict:
     folder:    str | None = default.get("folder") or None
     max_rows:  int | None = int(default["display_rows"]) if default.get("display_rows") else None
 
+    latest_by = (default.get("latest_by") or "mtime").strip().lower()
+    if latest_by not in LATEST_BY_CHOICES:
+        raise SystemExit(
+            f"invalid latest_by: {latest_by!r} (expected one of {', '.join(LATEST_BY_CHOICES)})"
+        )
+
     columns: list[str] = []
     if parser.has_section("columns"):
         raw = parser["columns"].get("names", "")
@@ -41,7 +53,41 @@ def load_config() -> dict:
     if parser.has_section("filter"):
         filters = dict(parser["filter"])
 
-    return {"columns": columns, "filters": filters, "file": file_path, "folder": folder, "max_rows": max_rows}
+    return {
+        "columns": columns, "filters": filters, "file": file_path, "folder": folder,
+        "max_rows": max_rows, "latest_by": latest_by,
+    }
+
+
+def latest_csv(folder: Path, latest_by: str = "mtime") -> Path:
+    """folder 直下で最も新しい .csv を返す。サブフォルダは見ない。"""
+    if not folder.is_dir():
+        raise SystemExit(f"folder not found: {folder}")
+
+    candidates = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".csv"]
+    if not candidates:
+        raise SystemExit(f"no .csv found in {folder}")
+
+    if latest_by == "name":
+        return max(candidates, key=lambda p: p.name)
+    # 更新日時。同着はファイル名で決定的に選ぶ
+    return max(candidates, key=lambda p: (p.stat().st_mtime, p.name))
+
+
+def resolve_file_path(
+    raw: Path | None, folder: Path | None, latest_by: str
+) -> tuple[Path, bool]:
+    """読み込む CSV を決める。戻り値は (パス, 最新ファイルとして自動選択したか)。"""
+    if raw is None:
+        # file 未指定 → folder 内の最新 CSV（folder は呼び出し側で検証済み）
+        assert folder is not None
+        return latest_csv(folder, latest_by), True
+
+    # filename only なら folder と結合。フルパスなら folder は無視
+    path = folder / raw if (folder and raw.parent == Path(".")) else raw
+    if path.is_dir():
+        return latest_csv(path, latest_by), True
+    return path, False
 
 
 def is_null_like(value: str) -> bool:
@@ -218,7 +264,10 @@ def write_excel(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="CSV table viewer with fuzzy column selection")
-    parser.add_argument("file", type=Path, nargs="?", help="path to .csv (overrides config.ini)")
+    parser.add_argument(
+        "file", type=Path, nargs="?",
+        help="path to .csv, or a folder to read its newest .csv (overrides config.ini)",
+    )
     parser.add_argument(
         "-l", "--list-columns",
         action="store_true",
@@ -228,16 +277,23 @@ def main() -> None:
 
     cfg = load_config()
 
-    raw: Path | None = args.file or (Path(cfg["file"]) if cfg["file"] else None)
-    if raw is None:
-        parser.error("file not specified: pass as argument or set [default] file = ... in config.ini")
-
     if cfg["folder"]:
         raw_folder = Path(cfg["folder"])
         folder = raw_folder if raw_folder.is_absolute() else CONFIG_PATH.parent / raw_folder
     else:
         folder = None
-    file_path = folder / raw if (folder and raw.parent == Path(".")) else raw
+
+    raw: Path | None = args.file or (Path(cfg["file"]) if cfg["file"] else None)
+    if raw is None and folder is None:
+        parser.error(
+            "file not specified: pass as argument or set [default] file = ... "
+            "(or folder = ... to use its newest .csv) in config.ini"
+        )
+
+    file_path, auto_selected = resolve_file_path(raw, folder, cfg["latest_by"])
+    if auto_selected:
+        mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
+        print(f"selected: {file_path}  ({mtime:%Y-%m-%d %H:%M})")
 
     if args.list_columns:
         all_headers, _ = read_csv(file_path, headers_only=True)

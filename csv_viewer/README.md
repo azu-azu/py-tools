@@ -8,6 +8,9 @@ CSV ファイルをターミナルに整形表示する CLI ツール。
 # ファイルを直接指定
 python csv_viewer/csv_filter.py <file.csv>
 
+# フォルダを指定 → その中で1番新しい .csv を自動で選ぶ
+python csv_viewer/csv_filter.py <folder>
+
 # config.ini に file を書いておけば引数なしで実行できる
 python csv_viewer/csv_filter.py
 
@@ -43,7 +46,9 @@ column count = 3
 [default]
 folder = C:\Users\you\data   # filename only 指定時の base dir
 file = sample.csv            # filename only → folder と結合。フルパスなら folder を無視
+                             # 空にすると folder 内で1番新しい .csv を自動選択
 display_rows = 30            # 表示する最大行数。省略時は全行
+latest_by = mtime            # 自動選択の基準。mtime（デフォルト） or name
 
 [columns]
 # 表示する列名をカンマ区切りで指定（fuzzy match）
@@ -61,6 +66,7 @@ category =
 | `[default] folder` | filename only 指定時の base directory |
 | `[default] file` | デフォルトの CSV パス。CLI 引数で上書き可能 |
 | `[default] display_rows` | 表示する最大行数。省略時は全行表示 |
+| `[default] latest_by` | 最新ファイル自動選択の基準。`mtime`（デフォルト） or `name` |
 | `[columns] names` | 表示列をカンマ区切りで指定。省略時は全列表示 |
 | `[filter]` | 行の絞り込み条件。省略時は全行表示 |
 
@@ -70,9 +76,31 @@ category =
 
 1. CLI 引数
 2. `config.ini` の `file`
-3. どちらもなければエラー
+3. どちらも無く `folder` があれば、その中で1番新しい `.csv`
+4. すべて無ければエラー
 
 指定されたパスが filename only の場合、`folder` と結合する。フルパスなら `folder` は無視。
+
+### 最新ファイルの自動選択
+
+指定先がフォルダのとき（CLI 引数がフォルダ／`file` が空で `folder` のみ指定）、その中で1番新しい `.csv` を選ぶ。
+
+```bash
+$ python csv_viewer/csv_filter.py C:\Users\you\data
+selected: C:\Users\you\data\sales_0805.csv  (2026-08-05 09:12)
+...
+```
+
+どのファイルを開いたかは必ず `selected:` 行に出る。
+
+| 挙動 | 詳細 |
+|---|---|
+| 基準 | `latest_by = mtime`（更新日時、デフォルト）。同着はファイル名で決定的に選ぶ |
+| | `latest_by = name` ならファイル名の降順で先頭。`売上_20260805.csv` のように名前へ日付が入る運用向け |
+| 対象 | フォルダ直下の `.csv` のみ。**サブフォルダは見ない**。拡張子は大文字 `.CSV` も対象 |
+| `.csv` が0件 | `no .csv found in <folder>` で終了 |
+
+更新日時はダウンロード直後なら正確だが、コピーや zip 展開で元の日時が保たれないと崩れる。その場合は `latest_by = name` の方が安定する。
 
 ### null-like の扱い
 
