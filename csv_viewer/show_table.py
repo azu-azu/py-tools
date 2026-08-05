@@ -325,7 +325,7 @@ def main() -> None:
     file_path, auto_selected = resolve_file_path(raw, folder, cfg["latest_by"])
     if auto_selected:
         mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
-        print(f"selected: {file_path}  ({mtime:%Y-%m-%d %H:%M})")
+        print(f"\nselected: {file_path}  ({mtime:%Y-%m-%d %H:%M})\n")
 
     if args.list_columns:
         all_headers, _ = read_csv(file_path, headers_only=True)
