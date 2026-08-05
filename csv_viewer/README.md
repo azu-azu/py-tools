@@ -17,6 +17,26 @@ csv_view.bat
 
 CLI 引数が config.ini より優先される。
 
+### 列名だけを表示する
+
+```bash
+python csv_viewer/csv_filter.py --list-columns <file.csv>
+python csv_viewer/csv_filter.py -l <file.csv>
+
+# Windows
+csv_columns.bat <file.csv>
+```
+
+```
+1. name
+2. date
+3. amount
+
+column count = 3
+```
+
+ヘッダー行だけを読んで連番付きで表示し、終了する。`[columns]` / `[filter]` の設定は無視され、Excel も出力しない。`[filter]` に書く列名を確認したいときや、巨大な CSV の中身を開かずに構造だけ見たいときに使う。
+
 ## config.ini
 
 ```ini

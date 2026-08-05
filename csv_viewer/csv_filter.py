@@ -54,15 +54,15 @@ def display_value(value: str) -> str:
     return value
 
 
-def read_csv(path: Path) -> tuple[list[str], list[list[str]]]:
+def read_csv(path: Path, headers_only: bool = False) -> tuple[list[str], list[list[str]]]:
     if not path.exists():
         raise SystemExit(f"file not found: {path}")
     for enc in ENCODING_CANDIDATES:
         try:
             with path.open(encoding=enc, newline="") as f:
                 reader = csv.reader(f)
-                headers = next(reader)
-                rows = list(reader)
+                headers = next(reader, [])
+                rows = [] if headers_only else list(reader)
             logger.info("encoding: %s", enc)
             return headers, rows
         except (UnicodeDecodeError, LookupError):
@@ -176,6 +176,17 @@ def format_table(headers: list[str], rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
+def format_columns(headers: list[str]) -> str:
+    if not headers:
+        return "(no columns)"
+
+    width = len(str(len(headers)))
+    lines = [f"{i:>{width}}. {h}" for i, h in enumerate(headers, 1)]
+    lines.append("")
+    lines.append(f"column count = {len(headers)}")
+    return "\n".join(lines)
+
+
 def write_excel(
     all_headers: list[str],
     headers: list[str],
@@ -208,6 +219,11 @@ def write_excel(
 def main() -> None:
     parser = argparse.ArgumentParser(description="CSV table viewer with fuzzy column selection")
     parser.add_argument("file", type=Path, nargs="?", help="path to .csv (overrides config.ini)")
+    parser.add_argument(
+        "-l", "--list-columns",
+        action="store_true",
+        help="列名だけを表示して終了する（filter・Excel 出力は行わない）",
+    )
     args = parser.parse_args()
 
     cfg = load_config()
@@ -222,6 +238,11 @@ def main() -> None:
     else:
         folder = None
     file_path = folder / raw if (folder and raw.parent == Path(".")) else raw
+
+    if args.list_columns:
+        all_headers, _ = read_csv(file_path, headers_only=True)
+        print(format_columns(all_headers))
+        return
 
     all_headers, rows = read_csv(file_path)
     filters = resolve_filter_columns(all_headers, cfg["filters"])
