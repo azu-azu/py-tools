@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "py-tools"
+version = "0.1.0"
+description = "A collection of small CLI utilities for data inspection"
+requires-python = ">=3.11"
+dependencies = ["openpyxl"]
+
+[project.scripts]
+csvview = "csv_viewer.show_table:main"
+xlview = "excel_viewer.show_table:main"
+
+[tool.setuptools]
+# config.ini を編集可能な場所に置いたままにするため editable install (pip install -e .) を前提とする
+packages = ["csv_viewer", "excel_viewer", "utils"]

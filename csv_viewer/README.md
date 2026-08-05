@@ -6,25 +6,24 @@ CSV ファイルをターミナルに整形表示する CLI ツール。
 
 ```bash
 # ファイルを直接指定
-python csv_viewer/show_table.py <file.csv>
+csvview <file.csv>
 
 # フォルダを指定 → その中で1番新しい .csv を自動で選ぶ
-python csv_viewer/show_table.py <folder>
+csvview <folder>
 
 # config.ini に file を書いておけば引数なしで実行できる
-python csv_viewer/show_table.py
-
-# Windows — csv_view.bat（repo root）を使う場合
-csv_view.bat
+csvview
 ```
+
+`csvview` コマンドは repo root で `pip install -e .` すると使えるようになる（[Install](../README.md#install)）。インストールせずに `python csv_viewer/show_table.py <file.csv>` と直接実行してもよい。Windows なら `csv_view.bat` / `csv_columns.bat`（repo root）も使える。
 
 CLI 引数が config.ini より優先される。
 
 ### 列名だけを表示する
 
 ```bash
-python csv_viewer/show_table.py --list-columns <file.csv>
-python csv_viewer/show_table.py -l <file.csv>
+csvview --list-columns <file.csv>
+csvview -l <file.csv>
 
 # Windows
 csv_columns.bat <file.csv>
@@ -86,7 +85,7 @@ category =
 指定先がフォルダのとき（CLI 引数がフォルダ／`file` が空で `folder` のみ指定）、その中で1番新しい `.csv` を選ぶ。
 
 ```bash
-$ python csv_viewer/show_table.py C:\Users\you\data
+$ csvview C:\Users\you\data
 selected: C:\Users\you\data\sales_0805.csv  (2026-08-05 09:12)
 ...
 ```
@@ -129,7 +128,8 @@ filter列 'sttus' が見つかりません。候補 (1-5 / 7):
 ## Dependencies
 
 ```bash
-pip install -r csv_viewer/requirements.txt
+pip install -e .                            # repo root。csvview コマンドも入る
+pip install -r csv_viewer/requirements.txt  # 依存だけ入れる場合
 ```
 
 表示結果は `output/` 配下に Excel（`columns` シート + `data` シート、auto-filter 付き）としても書き出される。
