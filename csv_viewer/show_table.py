@@ -31,14 +31,21 @@ def load_config() -> dict:
     if not CONFIG_PATH.exists():
         return dict(_DEFAULT_CONFIG)
 
-    parser = configparser.ConfigParser()
+    # inline_comment_prefixes: `key = value  # コメント` を値の右側に書けるようにする。
+    # `#` の直前に空白が要るので、`code = A#1` のような値はそのまま保持される。
+    parser = configparser.ConfigParser(inline_comment_prefixes=("#",))
     parser.optionxform = str  # キー名の大文字小文字を保持
     parser.read(CONFIG_PATH, encoding="utf-8")
 
     default = parser["default"] if parser.has_section("default") else {}
     file_path: str | None = default.get("file") or None
     folder:    str | None = default.get("folder") or None
-    max_rows:  int | None = int(default["display_rows"]) if default.get("display_rows") else None
+    max_rows: int | None = None
+    if default.get("display_rows"):
+        try:
+            max_rows = int(default["display_rows"])
+        except ValueError:
+            raise SystemExit(f"invalid display_rows: {default['display_rows']!r} (expected an integer)")
 
     latest_by = (default.get("latest_by") or "mtime").strip().lower()
     if latest_by not in LATEST_BY_CHOICES:

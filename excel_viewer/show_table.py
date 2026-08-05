@@ -18,14 +18,21 @@ def load_config(sheet_name: str | None = None) -> dict:
     if not CONFIG_PATH.exists():
         return {"header_row": 1}
 
-    parser = configparser.ConfigParser()
+    # inline_comment_prefixes: `key = value  # コメント` を値の右側に書けるようにする
+    parser = configparser.ConfigParser(inline_comment_prefixes=("#",))
     parser.read(CONFIG_PATH, encoding="utf-8")
 
     cfg = dict(parser["default"]) if parser.has_section("default") else {}
     if sheet_name and parser.has_section(sheet_name):
         cfg.update(parser[sheet_name])
 
-    return {k: int(v) for k, v in cfg.items()}
+    parsed: dict[str, int] = {}
+    for k, v in cfg.items():
+        try:
+            parsed[k] = int(v)
+        except ValueError:
+            raise SystemExit(f"invalid {k}: {v!r} (expected an integer)")
+    return parsed
 
 
 def read_sheet(
