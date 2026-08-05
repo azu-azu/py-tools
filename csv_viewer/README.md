@@ -54,7 +54,7 @@ latest_by = mtime            # 自動選択の基準。mtime（デフォルト�
 names = name, date, amount
 
 [filter]
-# 列名 = 値（完全一致）
+# 列名 = 値。列名は完全一致、値は部分一致
 status = done
 # 空欄 or null-like（NULL, None, N/A 等）にマッチ
 category =
@@ -67,7 +67,7 @@ category =
 | `[default] display_rows` | 表示する最大行数。省略時は全行表示 |
 | `[default] latest_by` | 最新ファイル自動選択の基準。`mtime`（デフォルト） or `name` |
 | `[columns] names` | 表示列をカンマ区切りで指定。省略時は全列表示 |
-| `[filter]` | 行の絞り込み条件。省略時は全行表示 |
+| `[filter]` | 行の絞り込み条件。列名は完全一致、値は部分一致。省略時は全行表示 |
 
 文字コードは設定不要で、`utf-8` → `cp932` の順に自動判定する。
 
@@ -117,6 +117,19 @@ selected: C:\Users\you\data\sales_0805.csv  (2026-08-05 09:12)
 | `.csv` が0件 | `no .csv found in <folder>` で終了 |
 
 更新日時はダウンロード直後なら正確だが、コピーや zip 展開で元の日時が保たれないと崩れる。その場合は `latest_by = name` の方が安定する。
+
+### filter の一致ルール
+
+**列名は完全一致、値は部分一致。** 値がセルに含まれていればその行を残す。
+
+```ini
+[filter]
+status = 完了       # 「完了」「未完了」「完了待ち」すべてにマッチ
+```
+
+大文字小文字は区別する（`done` は `Done` にマッチしない）。複数条件を書いた場合は AND。
+
+値を空にしたときだけは例外で、部分一致ではなく「空欄 or null-like」の判定になる（`""` は全行に含まれてしまうため）。
 
 ### null-like の扱い
 

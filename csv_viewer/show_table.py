@@ -173,10 +173,11 @@ def apply_filters(
             continue
         idx = headers.index(col_name)
         if value == "":
-            # 空文字列 or null-like にマッチ
+            # 空文字列 or null-like にマッチ（"" は下の部分一致だと全行に当たるので先に分岐）
             rows = [r for r in rows if r[idx] == "" or is_null_like(r[idx])]
         else:
-            rows = [r for r in rows if r[idx] == value]
+            # 部分一致。値が含まれていればマッチする
+            rows = [r for r in rows if value in r[idx]]
     return rows
 
 
