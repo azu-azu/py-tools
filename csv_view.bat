@@ -1,2 +1,2 @@
 @echo off
-py "%~dp0csv_viewer\csv_filter.py"
+py "%~dp0csv_viewer\show_table.py"

@@ -6,13 +6,13 @@ CSV ファイルをターミナルに整形表示する CLI ツール。
 
 ```bash
 # ファイルを直接指定
-python csv_viewer/csv_filter.py <file.csv>
+python csv_viewer/show_table.py <file.csv>
 
 # フォルダを指定 → その中で1番新しい .csv を自動で選ぶ
-python csv_viewer/csv_filter.py <folder>
+python csv_viewer/show_table.py <folder>
 
 # config.ini に file を書いておけば引数なしで実行できる
-python csv_viewer/csv_filter.py
+python csv_viewer/show_table.py
 
 # Windows — csv_view.bat（repo root）を使う場合
 csv_view.bat
@@ -23,8 +23,8 @@ CLI 引数が config.ini より優先される。
 ### 列名だけを表示する
 
 ```bash
-python csv_viewer/csv_filter.py --list-columns <file.csv>
-python csv_viewer/csv_filter.py -l <file.csv>
+python csv_viewer/show_table.py --list-columns <file.csv>
+python csv_viewer/show_table.py -l <file.csv>
 
 # Windows
 csv_columns.bat <file.csv>
@@ -86,7 +86,7 @@ category =
 指定先がフォルダのとき（CLI 引数がフォルダ／`file` が空で `folder` のみ指定）、その中で1番新しい `.csv` を選ぶ。
 
 ```bash
-$ python csv_viewer/csv_filter.py C:\Users\you\data
+$ python csv_viewer/show_table.py C:\Users\you\data
 selected: C:\Users\you\data\sales_0805.csv  (2026-08-05 09:12)
 ...
 ```

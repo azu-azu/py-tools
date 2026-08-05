@@ -1,2 +1,2 @@
 @echo off
-py "%~dp0csv_viewer\csv_filter.py" --list-columns %*
+py "%~dp0csv_viewer\show_table.py" --list-columns %*
