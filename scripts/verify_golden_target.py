@@ -665,6 +665,10 @@ def _verify(
 
     # 共通列はすべてStage 1のmergeキーになるため、
     # merge前に左右のdtypeを揃えておく
+    #
+    # 日付列の判定はこの整合より前に済んでいる。
+    # 判定をgolden基準から左右の和集合へ変えるなら、この呼び出しも判定より前へ移す。
+    # 数値列にto_datetimeを当てるとエポックns扱いになり、警告なしで日付が壊れるため。
     left_n, right_n = _align_common_dtypes(
         left_n,
         right_n,
