@@ -830,15 +830,24 @@ def _verify(
     # ────────────────────────────────────────────────────────────────
     # セル単位の差分
 
+    # both_keysを左に置いて、左右の行順をこれに合わせる。
+    #
+    # 残差の並び替えはsorted(common_cols)、つまり列名のアルファベット順で
+    # 行われるため、キー列より前に並ぶ列があると、そちらが第1ソートキーに
+    # なる。残差行は左右で値が違うので、その場合キーの並びがズレる。
+    #
+    # 残差を左に置くとその並びがそのまま残り、left_bothとright_bothが
+    # 同じキー集合を違う順序で持つことになって、セル比較が
+    # 「Can only compare identically-labeled Series objects」で落ちる。
     left_both = (
-        resid_left
-        .merge(both_keys, on=merge_keys)
+        both_keys
+        .merge(resid_left, on=merge_keys)
         .set_index(merge_keys)
     )
 
     right_both = (
-        resid_right
-        .merge(both_keys, on=merge_keys)
+        both_keys
+        .merge(resid_right, on=merge_keys)
         .set_index(merge_keys)
     )
 
