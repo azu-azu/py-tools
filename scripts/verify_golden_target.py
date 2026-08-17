@@ -280,6 +280,168 @@ def _ascii_signature(value: str) -> str:
 
 
 # ────────────────────────────────────────────────────────────────────
+# dtypeの整合
+
+def _is_numeric_col(series: pd.Series) -> bool:
+    """mergeキーとして数値扱いしてよい列かを返す。
+
+    boolはis_numeric_dtypeがTrueになるが、
+    文字列化するとTrue/Falseになり数値表記と揃わないため除外する。
+    """
+    return (
+        pd.api.types.is_numeric_dtype(series)
+        and not pd.api.types.is_bool_dtype(series)
+    )
+
+
+def _is_text_col(series: pd.Series) -> bool:
+    """文字列として扱うdtypeかを返す。
+
+    文字列カラムのdtypeはpandas 2ではobject、pandas 3ではstrになるが、
+    この2つは混在したままでもmergeできるので同一視する。
+    """
+    return (
+        pd.api.types.is_object_dtype(series)
+        or pd.api.types.is_string_dtype(series)
+    )
+
+
+def _to_text(series: pd.Series) -> pd.Series:
+    """左右で表記が揃うように文字列化する。
+
+    astype(str)任せにすると2種類の偽差分が出る。
+
+    1つ目は欠損で、pandas 2では"nan"、pandas 3では欠損のまま残り、
+    _normalizeで空文字にした文字列側と食い違う。
+
+    2つ目は整数値で、欠損が1つあるだけで列がfloat64になり、
+    1 が "1.0" になって文字列側の "1" と食い違う。
+
+    そのため欠損は空文字へ、整数値の浮動小数点数は整数表記へ寄せる。
+    """
+    if _is_numeric_col(series):
+        numbers = pd.to_numeric(series, errors="coerce")
+
+        # 1e15を超えると整数へ丸めた時点で桁が落ちるため対象外にする
+        integral = (
+            numbers.notna()
+            & (numbers % 1 == 0)
+            & (numbers.abs() < 1e15)
+        )
+        fractional = numbers.notna() & ~integral
+
+        text = pd.Series("", index=series.index, dtype=object)
+        text[integral] = (
+            numbers[integral].astype("int64").astype(str)
+        )
+        text[fractional] = numbers[fractional].astype(str)
+
+        return text.astype(str)
+
+    if pd.api.types.is_datetime64_any_dtype(series):
+        # 時刻を持たない日付型は、_normalizeの日付列と同じ表記へ寄せる
+        if (series.dropna().dt.normalize() == series.dropna()).all():
+            formatted = series.dt.strftime("%Y-%m-%d")
+        else:
+            formatted = series.astype(str)
+
+        return formatted.where(series.notna(), "").astype(str)
+
+    text = series.astype(object)
+
+    return text.where(series.notna(), "").astype(str)
+
+
+def _align_common_dtypes(
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+    cols: list[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """左右でdtypeが食い違う共通列を、mergeできる型へ揃える。
+
+    read_csvはファイル単位で型を推論するため、同じ列でも
+    golden側がint64、target側がstrになることがある。
+
+    共通列はすべてStage 1のmergeキーになるので、
+    1列でも型が割れているとmerge前にValueErrorで落ちる。
+
+    数値どうし(int64 vs float64)と文字列どうし(object vs str)は
+    pandasが吸収するので触らない。
+
+    片方だけ数値の場合、文字列側が全部数値として読めるなら数値へ寄せ、
+    読めない値があるなら両方を文字列へ落とす。
+
+    数値へ寄せた列はFLOAT_ATOLによる近似比較が残るが、
+    文字列化した列は表記そのものの比較になるため、
+    どちらへ倒れたかを毎回printする。
+    """
+    left = left.copy()
+    right = right.copy()
+
+    for col in cols:
+        left_numeric = _is_numeric_col(left[col])
+        right_numeric = _is_numeric_col(right[col])
+
+        # int64 vs float64 はmergeも比較も問題なく通る
+        if left_numeric and right_numeric:
+            continue
+
+        # object vs str はそのままmergeできる
+        if (
+            _is_text_col(left[col])
+            and _is_text_col(right[col])
+        ):
+            continue
+
+        numeric_vs_text = (
+            left_numeric and _is_text_col(right[col])
+        ) or (
+            right_numeric and _is_text_col(left[col])
+        )
+
+        if not numeric_vs_text:
+            # 日付型と文字列など、数値以外での食い違い
+            left[col] = _to_text(left[col])
+            right[col] = _to_text(right[col])
+
+            print(f"⚠️ {col}: dtype不一致のため両方を文字列化")
+            continue
+
+        text_frame = right if left_numeric else left
+        text_side = text_frame[col]
+
+        parsed = pd.to_numeric(text_side, errors="coerce")
+
+        # 空欄はNaNとして数値側の欠損と対応するため、失敗扱いにしない
+        blank = (
+            text_side.isna()
+            | text_side.astype(str).str.strip().eq("")
+        )
+
+        if (parsed.notna() | blank).all():
+            text_frame[col] = parsed
+
+            print(f"ℹ️ {col}: 文字列側を数値へ揃えた")
+            continue
+
+        sample = (
+            text_side[parsed.isna() & ~blank]
+            .drop_duplicates()
+            .head(5)
+            .tolist()
+        )
+
+        left[col] = _to_text(left[col])
+        right[col] = _to_text(right[col])
+
+        print(
+            f"⚠️ {col}: 型不一致のため両方を文字列化 例: {sample}"
+        )
+
+    return left, right
+
+
+# ────────────────────────────────────────────────────────────────────
 # 文字化け行の吸収（キーなしモード用）
 
 def _absorb_garbled_rows(
@@ -500,6 +662,14 @@ def _verify(
 
     left_n = left_n[common_cols]
     right_n = right_n[common_cols]
+
+    # 共通列はすべてStage 1のmergeキーになるため、
+    # merge前に左右のdtypeを揃えておく
+    left_n, right_n = _align_common_dtypes(
+        left_n,
+        right_n,
+        common_cols,
+    )
 
     # ────────────────────────────────────────────────────────────────
     # Stage 1: 完全一致行を並び順に依存せず吸収
