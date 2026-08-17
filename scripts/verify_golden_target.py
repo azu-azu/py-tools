@@ -1191,6 +1191,10 @@ def run_verify(
         key_cols=actual_keys,
     )
 
+    # 差分が長いと冒頭の見出しまで戻らないと確認できないため、
+    # どのgoldenと比べた結果なのかを末尾にもう一度出す
+    print(f"\n[golden] {golden_path}")
+
     return result
 
 
