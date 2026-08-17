@@ -513,12 +513,12 @@ def _absorb_garbled_rows(
     # signature置換で新たに重複した行も取り違えないよう出現順連番を振る
     left_sig["_gseq"] = (
         left_sig
-        .groupby(common_cols, dropna=False)
+        .groupby(common_cols, dropna=False, observed=True)
         .cumcount()
     )
     right_sig["_gseq"] = (
         right_sig
-        .groupby(common_cols, dropna=False)
+        .groupby(common_cols, dropna=False, observed=True)
         .cumcount()
     )
 
@@ -708,14 +708,17 @@ def _verify(
     left_full = left_n.copy()
     right_full = right_n.copy()
 
+    # cumcountは行のない組み合わせに何も返さないため、
+    # observedはどちらでも結果が変わらない。
+    # pandas 2の非推奨警告を避けて、pandas 3の既定値に合わせておく。
     left_full["_fseq"] = (
         left_full
-        .groupby(common_cols, dropna=False)
+        .groupby(common_cols, dropna=False, observed=True)
         .cumcount()
     )
     right_full["_fseq"] = (
         right_full
-        .groupby(common_cols, dropna=False)
+        .groupby(common_cols, dropna=False, observed=True)
         .cumcount()
     )
 
@@ -781,12 +784,12 @@ def _verify(
 
     resid_left["_seq"] = (
         resid_left
-        .groupby(key_cols, dropna=False)
+        .groupby(key_cols, dropna=False, observed=True)
         .cumcount()
     )
     resid_right["_seq"] = (
         resid_right
-        .groupby(key_cols, dropna=False)
+        .groupby(key_cols, dropna=False, observed=True)
         .cumcount()
     )
 
