@@ -365,8 +365,11 @@ def _align_common_dtypes(
     共通列はすべてStage 1のmergeキーになるので、
     1列でも型が割れているとmerge前にValueErrorで落ちる。
 
-    数値どうし(int64 vs float64)と文字列どうし(object vs str)は
-    pandasが吸収するので触らない。
+    dtypeが同じ列、数値どうし(int64 vs float64)、
+    文字列どうし(object vs str)は、そのままmergeできるので触らない。
+
+    boolと数値の組み合わせは、文字列化するとTrue/Falseと1/0になって
+    全行が食い違うため、bool側を数値へ寄せる。
 
     片方だけ数値の場合、文字列側が全部数値として読めるなら数値へ寄せ、
     読めない値があるなら両方を文字列へ落とす。
@@ -375,12 +378,20 @@ def _align_common_dtypes(
     文字列化した列は表記そのものの比較になるため、
     どちらへ倒れたかを毎回printする。
     """
-    left = left.copy()
-    right = right.copy()
+    # 列ごと差し替えるだけで元の値は書き換えないため、浅いコピーで足りる
+    left = left.copy(deep=False)
+    right = right.copy(deep=False)
 
     for col in cols:
-        left_numeric = _is_numeric_col(left[col])
-        right_numeric = _is_numeric_col(right[col])
+        left_col = left[col]
+        right_col = right[col]
+
+        # 同じdtypeなら揃える余地がない
+        if left_col.dtype == right_col.dtype:
+            continue
+
+        left_numeric = _is_numeric_col(left_col)
+        right_numeric = _is_numeric_col(right_col)
 
         # int64 vs float64 はmergeも比較も問題なく通る
         if left_numeric and right_numeric:
@@ -388,21 +399,37 @@ def _align_common_dtypes(
 
         # object vs str はそのままmergeできる
         if (
-            _is_text_col(left[col])
-            and _is_text_col(right[col])
+            _is_text_col(left_col)
+            and _is_text_col(right_col)
         ):
             continue
 
+        left_bool = pd.api.types.is_bool_dtype(left_col)
+        right_bool = pd.api.types.is_bool_dtype(right_col)
+
+        # bool vs 数値
+        # 欠損を持つboolも通せるようnullableなInt64へ寄せる
+        if (
+            (left_bool and right_numeric)
+            or (right_bool and left_numeric)
+        ):
+            bool_frame = left if left_bool else right
+            bool_frame[col] = bool_frame[col].astype("Int64")
+
+            print(f"ℹ️ {col}: bool側を数値へ揃えた")
+            continue
+
         numeric_vs_text = (
-            left_numeric and _is_text_col(right[col])
+            left_numeric and _is_text_col(right_col)
         ) or (
-            right_numeric and _is_text_col(left[col])
+            right_numeric and _is_text_col(left_col)
         )
 
         if not numeric_vs_text:
-            # 日付型と文字列など、数値以外での食い違い
-            left[col] = _to_text(left[col])
-            right[col] = _to_text(right[col])
+            # ここまでで拾えなかった組み合わせ
+            # 日付型 vs 文字列、bool vs 文字列など
+            left[col] = _to_text(left_col)
+            right[col] = _to_text(right_col)
 
             print(f"⚠️ {col}: dtype不一致のため両方を文字列化")
             continue
