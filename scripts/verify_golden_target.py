@@ -64,6 +64,10 @@ EXTRA_COLS: list[str] = []
 LEFT_KEY = "golden"
 RIGHT_KEY = "target"
 
+# 差分表示の既定行数
+# 実行ごとに変えたい場合はrun_verifyのmax_rows引数で上書きする
+DEFAULT_MAX_ROWS: int = 20
+
 FLOAT_ATOL: float = 1e-9
 
 ALNUM_PATTERN = re.compile(r"[0-9A-Za-z]+")
@@ -1003,7 +1007,7 @@ def _print_result(
     result: VerifyResult,
     key_cols: list[str],
     *,
-    max_rows: int = 20,
+    max_rows: int,
 ) -> None:
     """突合結果をコンソールへ表示する。"""
     mark_ok = "✅"
@@ -1132,6 +1136,7 @@ def run_verify(
     key_cols: list[str] | None = None,
     *,
     target_path: Path = DEFAULT_TARGET,
+    max_rows: int = DEFAULT_MAX_ROWS,
 ) -> VerifyResult:
     """goldenとtargetを突合し、結果を表示して返す。
 
@@ -1160,7 +1165,19 @@ def run_verify(
         target CSVのパス。
 
         デフォルトはoutput/debug/_test.csv。
+
+    max_rows:
+        差分の表示行数。
+
+        省略時はDEFAULT_MAX_ROWSを使用する。
     """
+    # head(-n)は末尾n行を落とす意味になり、
+    # 見出しと実際の表示行数が食い違うため先に弾く
+    if max_rows < 1:
+        raise ValueError(
+            f"max_rowsは1以上を指定してください: {max_rows}"
+        )
+
     actual_keys = (
         DEFAULT_KEYS.copy()
         if key_cols is None
@@ -1189,6 +1206,7 @@ def run_verify(
     _print_result(
         result,
         key_cols=actual_keys,
+        max_rows=max_rows,
     )
 
     # 差分が長いと冒頭の見出しまで戻らないと確認できないため、
@@ -1227,6 +1245,16 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--max-rows",
+        type=int,
+        default=DEFAULT_MAX_ROWS,
+        help=(
+            "差分の表示行数。"
+            f"省略時は{DEFAULT_MAX_ROWS}"
+        ),
+    )
+
+    parser.add_argument(
         "--key",
         nargs="*",
         default=None,
@@ -1243,6 +1271,7 @@ def main() -> None:
         golden_name=args.golden_name,
         key_cols=args.key,
         target_path=args.target,
+        max_rows=args.max_rows,
     )
 
 
