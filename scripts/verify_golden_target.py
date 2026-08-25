@@ -213,11 +213,34 @@ def _resolve_golden_path(golden_name: str | None) -> Path:
 # ────────────────────────────────────────────────────────────────────
 # 正規化
 
+def _sort_by_column_names(df: pd.DataFrame) -> pd.DataFrame:
+    """列名の辞書順を優先キーにして行を並べ替える。
+
+    突合結果を実行ごとに安定させるための決定的な並び替え。
+
+    元ファイルの行順はここで失われるため、
+    並び順を比較したい場合はこれを通す前の状態を使う。
+    """
+    if len(df.columns) == 0:
+        return df.reset_index(drop=True)
+
+    return (
+        df
+        .sort_values(sorted(df.columns))
+        .reset_index(drop=True)
+    )
+
+
 def _normalize(
     df: pd.DataFrame,
     date_cols: list[str],
+    *,
+    sort_rows: bool = True,
 ) -> pd.DataFrame:
-    """突合前のDataFrameを正規化する。"""
+    """突合前のDataFrameを正規化する。
+
+    sort_rowsをFalseにすると、元ファイルの行順のまま返す。
+    """
     normalized = df.copy()
 
     # 文字列カラムの前後空白を除去
@@ -264,13 +287,13 @@ def _normalize(
     text_cols = _text_cols(normalized)
     normalized[text_cols] = normalized[text_cols].fillna("")
 
-    # 列名順による決定的な並び替え
-    if len(normalized.columns) > 0:
-        normalized = normalized.sort_values(
-            sorted(normalized.columns)
-        )
+    normalized = normalized.reset_index(drop=True)
 
-    return normalized.reset_index(drop=True)
+    return (
+        _sort_by_column_names(normalized)
+        if sort_rows
+        else normalized
+    )
 
 
 def _ascii_signature(value: str) -> str:
@@ -587,6 +610,224 @@ def _absorb_garbled_rows(
 
 
 # ────────────────────────────────────────────────────────────────────
+# 並び順の比較
+
+# 差分として保持するサンプルの上限
+# 表示自体はmax_rowsで絞るが、全件保持しても使い道がないので蓋をする
+ORDER_SAMPLE_CAP: int = 1000
+
+# サンプル表示時の1行あたりの文字数上限
+ORDER_LABEL_WIDTH: int = 60
+
+
+@dataclass(frozen=True)
+class OrderResult:
+    """並び順の比較結果。
+
+    行の並び順は、左右の行の集合が一致しているときしか判定できない。
+    判定できなかった場合はcheckedがFalseになり、skip_reasonに理由が入る。
+
+    列の並び順は前提条件なしで判定できるため、checkedとは無関係に埋まる。
+    """
+
+    checked: bool
+    skip_reason: str
+    compare_cols: list[str]
+    row_total: int
+    first_diff: int | None
+    diff_count: int
+    samples: pd.DataFrame
+    left_cols: list[str]
+    right_cols: list[str]
+
+    @property
+    def row_match(self) -> bool:
+        """行の並び順が一致していると確認できた場合のみTrueを返す。"""
+        return self.checked and self.diff_count == 0
+
+    @property
+    def col_match(self) -> bool:
+        """共通列の並び順が一致している場合はTrueを返す。"""
+        return self.left_cols == self.right_cols
+
+    @property
+    def is_match(self) -> bool:
+        """行と列の並び順が両方とも一致している場合のみTrueを返す。"""
+        return self.row_match and self.col_match
+
+
+def _order_text(
+    df: pd.DataFrame,
+    cols: list[str],
+) -> pd.DataFrame:
+    """並び順の比較に使う列を、左右で表記が揃う文字列へ変換する。
+
+    文字化け対象列はASCII英数字のsignatureへ置き換える。
+
+    _absorb_garbled_rowsは文字化けした行をsignatureでペアにして
+    差分から取り除くが、生の値は左右で違ったまま残る。
+
+    そのまま位置比較をすると、吸収したはずの行で
+    「並び順が違う」と誤検知するため、ここで同じ土俵に乗せる。
+    """
+    text = {
+        col: (
+            _to_text(df[col]).map(_ascii_signature)
+            if col in GARBLED_COLS
+            else _to_text(df[col])
+        )
+        for col in cols
+    }
+
+    return pd.DataFrame(text, index=df.index)
+
+
+def _order_labels(
+    text: pd.DataFrame,
+    positions: np.ndarray,
+) -> list[str]:
+    """サンプル表示用に、比較対象列の値を1行1文字列へまとめる。
+
+    キーなしモードでは共通列すべてが比較対象になり、
+    そのまま並べると1行が横に伸びすぎるため頭で切る。
+    """
+    labels: list[str] = []
+
+    for row in text.to_numpy()[positions]:
+        label = " | ".join(row)
+
+        if len(label) > ORDER_LABEL_WIDTH:
+            label = label[: ORDER_LABEL_WIDTH - 1] + "…"
+
+        labels.append(label)
+
+    return labels
+
+
+def _skip_order(
+    reason: str,
+    compare_cols: list[str],
+    left_cols: list[str],
+    right_cols: list[str],
+) -> OrderResult:
+    """行の並び順を判定しなかった結果を組み立てる。"""
+    return OrderResult(
+        checked=False,
+        skip_reason=reason,
+        compare_cols=list(compare_cols),
+        row_total=0,
+        first_diff=None,
+        diff_count=0,
+        samples=pd.DataFrame(),
+        left_cols=list(left_cols),
+        right_cols=list(right_cols),
+    )
+
+
+def _compare_order(
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+    compare_cols: list[str],
+    *,
+    left_cols: list[str],
+    right_cols: list[str],
+) -> OrderResult:
+    """左右の行を先頭から突き合わせ、位置がズレた箇所を数える。
+
+    diff_countは「動いた行数」ではなく「位置がズレた箇所の数」。
+
+    1行が先頭から100行目へ移動しただけでも、間の行がすべて
+    1つずつ前へ詰まるため、101箇所という数え方になる。
+
+    ここを行数として読むと規模を大きく誤るため、
+    表示側のラベルも「箇所」で統一している。
+
+    実際に動いた行数を出すには順列のランク比較が必要になるが、
+    最初のズレ位置さえ分かれば目視で追えるため、そこまではやらない。
+    """
+    if len(left) != len(right):
+        return _skip_order(
+            "行数が一致していないため",
+            compare_cols,
+            left_cols,
+            right_cols,
+        )
+
+    left_text = _order_text(left, compare_cols)
+    right_text = _order_text(right, compare_cols)
+
+    mismatch = (
+        left_text.to_numpy() != right_text.to_numpy()
+    ).any(axis=1)
+
+    diff_count = int(mismatch.sum())
+
+    first_diff = (
+        int(np.argmax(mismatch)) + 1
+        if diff_count
+        else None
+    )
+
+    positions = np.flatnonzero(mismatch)[:ORDER_SAMPLE_CAP]
+
+    samples = pd.DataFrame(
+        {
+            "位置": positions + 1,
+            LEFT_KEY: _order_labels(left_text, positions),
+            RIGHT_KEY: _order_labels(right_text, positions),
+        }
+    )
+
+    return OrderResult(
+        checked=True,
+        skip_reason="",
+        compare_cols=list(compare_cols),
+        row_total=len(left),
+        first_diff=first_diff,
+        diff_count=diff_count,
+        samples=samples,
+        left_cols=list(left_cols),
+        right_cols=list(right_cols),
+    )
+
+
+def _resolve_order(
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+    compare_cols: list[str],
+    *,
+    left_cols: list[str],
+    right_cols: list[str],
+    only_left: pd.DataFrame,
+    only_right: pd.DataFrame,
+) -> OrderResult:
+    """行の集合が一致しているときだけ、行の並び順を比較する。
+
+    片側にしかない行が残っている状態で位置比較をすると、
+    欠落や余剰の位置から後ろがすべてズレて情報にならない。
+
+    一方でセル差分(cell_diff)は前提条件に含めない。
+    キーが対応してさえいれば、値が違っても並び順は正しく判定でき、
+    「値は違うが順序は保たれている」を拾えるほうが情報量が多い。
+    """
+    if not (only_left.empty and only_right.empty):
+        return _skip_order(
+            "行セットが一致していないため",
+            compare_cols,
+            left_cols,
+            right_cols,
+        )
+
+    return _compare_order(
+        left,
+        right,
+        compare_cols,
+        left_cols=left_cols,
+        right_cols=right_cols,
+    )
+
+
+# ────────────────────────────────────────────────────────────────────
 # 結果の入れ物
 
 @dataclass(frozen=True)
@@ -599,16 +840,37 @@ class VerifyResult:
     fuzzy_matched: pd.DataFrame
     only_left_cols: list[str]
     only_right_cols: list[str]
+    order: OrderResult | None = None
 
     @property
     def is_match(self) -> bool:
-        """差分がまったくない場合はTrueを返す。"""
+        """値の差分がまったくない場合はTrueを返す。
+
+        並び順は含めない。
+        「値が一致」と「順序も一致」は要求レベルが別なので、
+        並び順はis_order_matchで別に見る。
+        """
         return (
             self.only_left.empty
             and self.only_right.empty
             and self.cell_diff.empty
             and not self.only_left_cols
             and not self.only_right_cols
+        )
+
+    @property
+    def is_order_match(self) -> bool:
+        """並び順が一致していると確認できた場合のみTrueを返す。
+
+        並び順を比較しなかった場合と、
+        行セットが違って判定できなかった場合はFalseになる。
+
+        両方を満たすことを求めるなら、
+        呼び出し側でis_matchと組み合わせる。
+        """
+        return (
+            self.order is not None
+            and self.order.is_match
         )
 
 
@@ -620,10 +882,14 @@ def _verify(
     right: pd.DataFrame,
     key_cols: list[str],
     float_atol: float = FLOAT_ATOL,
+    *,
+    check_order: bool = True,
 ) -> VerifyResult:
     """2つのDataFrameを突合し、列差分・行差分・セル差分を返す。
 
     key_colsが空リストの場合はキーなしモードになる。
+
+    check_orderがTrueの場合、値の突合に加えて並び順も比較する。
 
     キーなしモードでは、完全一致する行を除外した後、
     golden側だけに残った行をonly_left、
@@ -651,21 +917,22 @@ def _verify(
         source = "manual" if col in manual_date_cols else "auto"
         print(f"  {index:02d}:  {col} ({source})")
 
-    left_n = _normalize(left, date_cols)
-    right_n = _normalize(right, date_cols)
+    # 並び順の比較には元ファイルの行順が要るため、ここでは並べ替えない
+    left_u = _normalize(left, date_cols, sort_rows=False)
+    right_u = _normalize(right, date_cols, sort_rows=False)
 
     # ────────────────────────────────────────────────────────────────
     # 列差分
 
     only_left_cols = [
         col
-        for col in left_n.columns
-        if col not in right_n.columns
+        for col in left_u.columns
+        if col not in right_u.columns
     ]
     only_right_cols = [
         col
-        for col in right_n.columns
-        if col not in left_n.columns
+        for col in right_u.columns
+        if col not in left_u.columns
     ]
 
     missing_keys = [
@@ -682,8 +949,8 @@ def _verify(
 
     common_cols = [
         col
-        for col in left_n.columns
-        if col in right_n.columns
+        for col in left_u.columns
+        if col in right_u.columns
     ]
 
     if not common_cols:
@@ -691,8 +958,29 @@ def _verify(
             "goldenとtargetに共通する列がありません"
         )
 
-    left_n = left_n[common_cols]
-    right_n = right_n[common_cols]
+    # 共通列をtarget側の並びで持つ
+    # common_colsはgolden側の並びなので、この2つを比べれば列の並び順が分かる
+    right_col_order = [
+        col
+        for col in right_u.columns
+        if col in left_u.columns
+    ]
+
+    # 並び順の比較に使う列
+    #
+    # キーありモードはキー列だけでよい。
+    # キーが対応していれば値が違っても順序は判定できるので、
+    # 全列で比べるとセル差分のある行まで「並び順が違う」に化ける。
+    #
+    # キーなしモードは行を識別できる列が他にないため共通列すべてを使う。
+    order_cols = (
+        list(key_cols)
+        if key_cols
+        else list(common_cols)
+    )
+
+    left_u = left_u[common_cols]
+    right_u = right_u[common_cols]
 
     # 共通列はすべてStage 1のmergeキーになるため、
     # merge前に左右のdtypeを揃えておく
@@ -700,11 +988,17 @@ def _verify(
     # 日付列の判定はこの整合より前に済んでいる。
     # 判定をgolden基準から左右の和集合へ変えるなら、この呼び出しも判定より前へ移す。
     # 数値列にto_datetimeを当てるとエポックns扱いになり、警告なしで日付が壊れるため。
-    left_n, right_n = _align_common_dtypes(
-        left_n,
-        right_n,
+    left_u, right_u = _align_common_dtypes(
+        left_u,
+        right_u,
         common_cols,
     )
+
+    # ここから先の突合は並び順に依存しないため、
+    # 結果を実行ごとに安定させる決定的な順序へ並べ替える。
+    # 並び順の比較には、並べ替える前のleft_u / right_uを使う。
+    left_n = _sort_by_column_names(left_u)
+    right_n = _sort_by_column_names(right_u)
 
     # ────────────────────────────────────────────────────────────────
     # Stage 1: 完全一致行を並び順に依存せず吸収
@@ -763,6 +1057,20 @@ def _verify(
             common_cols,
         )
 
+        keyless_order = (
+            _resolve_order(
+                left_u,
+                right_u,
+                order_cols,
+                left_cols=common_cols,
+                right_cols=right_col_order,
+                only_left=keyless_left,
+                only_right=keyless_right,
+            )
+            if check_order
+            else None
+        )
+
         return VerifyResult(
             only_left=keyless_left,
             only_right=keyless_right,
@@ -770,6 +1078,7 @@ def _verify(
             fuzzy_matched=keyless_fuzzy,
             only_left_cols=only_left_cols,
             only_right_cols=only_right_cols,
+            order=keyless_order,
         )
 
     # ────────────────────────────────────────────────────────────────
@@ -944,6 +1253,20 @@ def _verify(
     if not fuzzy_matched.empty:
         fuzzy_matched = fuzzy_matched.drop(columns="_seq")
 
+    order = (
+        _resolve_order(
+            left_u,
+            right_u,
+            order_cols,
+            left_cols=common_cols,
+            right_cols=right_col_order,
+            only_left=only_left,
+            only_right=only_right,
+        )
+        if check_order
+        else None
+    )
+
     return VerifyResult(
         only_left=only_left,
         only_right=only_right,
@@ -951,6 +1274,7 @@ def _verify(
         fuzzy_matched=fuzzy_matched,
         only_left_cols=only_left_cols,
         only_right_cols=only_right_cols,
+        order=order,
     )
 
 
@@ -961,6 +1285,8 @@ def _verify_files(
     golden_path: Path,
     target_path: Path,
     key_cols: list[str],
+    *,
+    check_order: bool = True,
 ) -> VerifyResult:
     """CSVファイルを読み込み、突合結果を返す。"""
     left = _read_csv(
@@ -976,6 +1302,7 @@ def _verify_files(
         left,
         right,
         key_cols=key_cols,
+        check_order=check_order,
     )
 
 
@@ -1001,6 +1328,82 @@ def _print_frame(
     shown.index += 1  # 表示の連番を1始まりにする
 
     print(shown.to_string())
+
+
+def _print_order(
+    order: OrderResult | None,
+    max_rows: int,
+) -> None:
+    """並び順の比較結果をコンソールへ表示する。"""
+    if order is None:
+        return
+
+    mark_ok = "✅"
+    mark_ng = "⚠️"
+
+    # 列の並び順
+    col_pairs = [
+        (index, left_col, right_col)
+        for index, (left_col, right_col) in enumerate(
+            zip(order.left_cols, order.right_cols, strict=True),
+            start=1,
+        )
+        if left_col != right_col
+    ]
+
+    if not col_pairs:
+        print(
+            f"\n{mark_ok} 列の並び順: 一致 "
+            f"(共通{len(order.left_cols)}列)"
+        )
+    else:
+        print(
+            f"\n{mark_ng} 列の並び順: 不一致 "
+            f"(共通{len(order.left_cols)}列中 "
+            f"{len(col_pairs)}箇所)"
+        )
+
+        _print_frame(
+            pd.DataFrame(
+                col_pairs,
+                columns=["位置", LEFT_KEY, RIGHT_KEY],
+            ),
+            max_rows,
+        )
+
+    # 行の並び順
+    if not order.checked:
+        print(
+            f"\n➖ 行の並び順: 判定なし "
+            f"({order.skip_reason})"
+        )
+        return
+
+    if order.diff_count == 0:
+        print(
+            f"\n{mark_ok} 行の並び順: 一致 "
+            f"({order.row_total:,}行)"
+        )
+        return
+
+    print(
+        f"\n{mark_ng} 行の並び順: 不一致 "
+        f"({order.row_total:,}行中 "
+        f"{order.first_diff:,}行目から {order.diff_count:,}箇所)"
+    )
+
+    # 1行動いただけでも以降が全部ズレるため、
+    # 箇所数を「動いた行数」と読み違えないよう毎回添える
+    print(
+        "  ※ 箇所数は位置がズレた行位置の数であって、"
+        "動いた行数ではない"
+    )
+    print(
+        "  ※ 比較列: "
+        + ", ".join(order.compare_cols)
+    )
+
+    _print_frame(order.samples, max_rows)
 
 
 def _print_result(
@@ -1127,6 +1530,8 @@ def _print_result(
     if not result.fuzzy_matched.empty:
         print(unique_pairs)
 
+    _print_order(result.order, max_rows)
+
 
 # ────────────────────────────────────────────────────────────────────
 # 公開関数
@@ -1137,6 +1542,7 @@ def run_verify(
     *,
     target_path: Path = DEFAULT_TARGET,
     max_rows: int = DEFAULT_MAX_ROWS,
+    check_order: bool = True,
 ) -> VerifyResult:
     """goldenとtargetを突合し、結果を表示して返す。
 
@@ -1170,6 +1576,14 @@ def run_verify(
         差分の表示行数。
 
         省略時はDEFAULT_MAX_ROWSを使用する。
+
+    check_order:
+        並び順まで比較するかどうか。
+
+        Trueの場合、値の突合に加えて行と列の並び順を比較する。
+
+        行の並び順は、片側にしかない行がない場合だけ判定できる。
+        判定結果はVerifyResult.orderとis_order_matchで参照する。
     """
     # head(-n)は末尾n行を落とす意味になり、
     # 見出しと実際の表示行数が食い違うため先に弾く
@@ -1196,11 +1610,16 @@ def run_verify(
             else "(no key)"
         )
     )
+    print(
+        "order  : "
+        + ("比較する" if check_order else "比較しない")
+    )
 
     result = _verify_files(
         golden_path=golden_path,
         target_path=target_path,
         key_cols=actual_keys,
+        check_order=check_order,
     )
 
     _print_result(
@@ -1255,6 +1674,15 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--no-order",
+        action="store_true",
+        help=(
+            "並び順の比較をスキップする。"
+            "省略時は値の突合に続けて並び順も比較する"
+        ),
+    )
+
+    parser.add_argument(
         "--key",
         nargs="*",
         default=None,
@@ -1272,6 +1700,7 @@ def main() -> None:
         key_cols=args.key,
         target_path=args.target,
         max_rows=args.max_rows,
+        check_order=not args.no_order,
     )
 
 
