@@ -633,6 +633,7 @@ class OrderResult:
     checked: bool
     skip_reason: str
     compare_cols: list[str]
+    key_dup_rows: int
     row_total: int
     first_diff: int | None
     diff_count: int
@@ -641,8 +642,21 @@ class OrderResult:
     right_cols: list[str]
 
     @property
+    def key_duplicated(self) -> bool:
+        """比較に使ったキー列に重複がある場合はTrueを返す。
+
+        重複がある場合、同一キー内での行の入れ替わりは検出できない。
+        row_matchがTrueでも「確認できた範囲では一致」の意味になる。
+        """
+        return self.key_dup_rows > 0
+
+    @property
     def row_match(self) -> bool:
-        """行の並び順が一致していると確認できた場合のみTrueを返す。"""
+        """行の並び順が一致していると確認できた場合のみTrueを返す。
+
+        キー列に重複がある場合、同一キー内の入れ替わりは見えないため、
+        Trueでも「キー列で確認できる範囲では一致」に留まる。
+        """
         return self.checked and self.diff_count == 0
 
     @property
@@ -709,12 +723,14 @@ def _skip_order(
     compare_cols: list[str],
     left_cols: list[str],
     right_cols: list[str],
+    key_dup_rows: int,
 ) -> OrderResult:
     """行の並び順を判定しなかった結果を組み立てる。"""
     return OrderResult(
         checked=False,
         skip_reason=reason,
         compare_cols=list(compare_cols),
+        key_dup_rows=key_dup_rows,
         row_total=0,
         first_diff=None,
         diff_count=0,
@@ -731,6 +747,7 @@ def _compare_order(
     *,
     left_cols: list[str],
     right_cols: list[str],
+    key_dup_rows: int,
 ) -> OrderResult:
     """左右の行を先頭から突き合わせ、位置がズレた箇所を数える。
 
@@ -751,6 +768,7 @@ def _compare_order(
             compare_cols,
             left_cols,
             right_cols,
+            key_dup_rows,
         )
 
     left_text = _order_text(left, compare_cols)
@@ -782,6 +800,7 @@ def _compare_order(
         checked=True,
         skip_reason="",
         compare_cols=list(compare_cols),
+        key_dup_rows=key_dup_rows,
         row_total=len(left),
         first_diff=first_diff,
         diff_count=diff_count,
@@ -798,6 +817,7 @@ def _resolve_order(
     *,
     left_cols: list[str],
     right_cols: list[str],
+    key_dup_rows: int,
     only_left: pd.DataFrame,
     only_right: pd.DataFrame,
 ) -> OrderResult:
@@ -816,6 +836,7 @@ def _resolve_order(
             compare_cols,
             left_cols,
             right_cols,
+            key_dup_rows,
         )
 
     return _compare_order(
@@ -824,6 +845,7 @@ def _resolve_order(
         compare_cols,
         left_cols=left_cols,
         right_cols=right_cols,
+        key_dup_rows=key_dup_rows,
     )
 
 
@@ -979,6 +1001,33 @@ def _verify(
         else list(common_cols)
     )
 
+    # キー列に重複があると、同一キー内での行の入れ替わりは
+    # order_colsの比較に現れない
+    #
+    #   golden: ID=[1, 1, 2], V=[a, b, c]
+    #   target: ID=[1, 1, 2], V=[b, a, c]
+    #
+    # Stage 1が値差分を吸収し、キー列だけを見ると1,1,2どうしで
+    # 一致するため、実際は入れ替わっているのに「一致」と出る。
+    #
+    # order_colsを共通列すべてへ広げれば見えるようになるが、
+    # 今度はセル差分のある行が「並び順が違う」に化けて、
+    # 値の一致と順序の一致を分けた意味がなくなる。
+    #
+    # そのため判定は変えず、確認できた範囲を表示側で明示する。
+    #
+    # 判定できる場合は左右のキーが同じ多重集合になっているため、
+    # 重複の有無はgolden側だけ見れば足りる。
+    key_dup_rows = (
+        int(
+            left_u
+            .duplicated(subset=key_cols, keep=False)
+            .sum()
+        )
+        if key_cols
+        else 0
+    )
+
     left_u = left_u[common_cols]
     right_u = right_u[common_cols]
 
@@ -1064,6 +1113,7 @@ def _verify(
                 order_cols,
                 left_cols=common_cols,
                 right_cols=right_col_order,
+                key_dup_rows=key_dup_rows,
                 only_left=keyless_left,
                 only_right=keyless_right,
             )
@@ -1260,6 +1310,7 @@ def _verify(
             order_cols,
             left_cols=common_cols,
             right_cols=right_col_order,
+            key_dup_rows=key_dup_rows,
             only_left=only_left,
             only_right=only_right,
         )
@@ -1336,6 +1387,7 @@ def _print_order(
 ) -> None:
     """並び順の比較結果をコンソールへ表示する。"""
     if order is None:
+        print("\n➖ 並び順: 比較なし (--no-order)")
         return
 
     mark_ok = "✅"
@@ -1379,11 +1431,23 @@ def _print_order(
         )
         return
 
+    # キー列に重複があると同一キー内の入れ替わりが見えないため、
+    # 「一致」と言い切らず、確認できた範囲を添える
+    dup_note = (
+        "  ※ キー列に重複あり "
+        f"({order.key_dup_rows:,}行)。"
+        "同一キー内の入れ替わりは検出できない"
+    )
+
     if order.diff_count == 0:
         print(
             f"\n{mark_ok} 行の並び順: 一致 "
             f"({order.row_total:,}行)"
         )
+
+        if order.key_duplicated:
+            print(dup_note)
+
         return
 
     print(
@@ -1402,6 +1466,9 @@ def _print_order(
         "  ※ 比較列: "
         + ", ".join(order.compare_cols)
     )
+
+    if order.key_duplicated:
+        print(dup_note)
 
     _print_frame(order.samples, max_rows)
 
