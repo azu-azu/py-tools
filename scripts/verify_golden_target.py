@@ -655,10 +655,11 @@ class OrderResult:
 
     @property
     def row_match(self) -> bool:
-        """行の並び順が一致していると確認できた場合のみTrueを返す。
+        """行が元の位置に居ると判定できた場合にTrueを返す。
 
-        ambiguous_rowsが0でない場合、その行については
+        ambiguous_rowsが0でない場合、その行は
         「入れ替わっていない」と仮定した上での一致になる。
+        厳密さが要るなら、has_ambiguityと組み合わせる。
         """
         return self.checked and self.diff_count == 0
 
@@ -669,7 +670,13 @@ class OrderResult:
 
     @property
     def is_match(self) -> bool:
-        """行と列の並び順が両方とも一致している場合のみTrueを返す。"""
+        """行と列の並び順が両方とも一致と判定された場合にTrueを返す。
+
+        row_matchと同じく、ambiguous_rowsの分だけ仮定が混ざる。
+        曖昧さは「不一致」ではなく「未確認」なので、
+        ここをFalseへ倒すと不一致と区別がつかなくなる。
+        そのため判定には混ぜず、has_ambiguityで別に見る。
+        """
         return self.row_match and self.col_match
 
 
@@ -763,6 +770,15 @@ def _pair_positions(
     証明の上では起きないが、起きたときに黙って
     一致とも不一致とも言わないよう、呼び出し側で判定なしへ倒す。
     """
+    # Pass Aの groupby は、Stage 1 が済ませた仕事を
+    # 文字列化した値でもう一度やる形になっている。
+    #
+    # 速度が問題になったときの犯人はここだが、潰すには Stage 1 へ
+    # 行位置を持たせてその結果を再利用することになり、
+    # 突合の本体に並び順の都合が染み出す。
+    #
+    # 並び順の比較をこのブロックだけで完結させておくほうが、
+    # 壊れたときの切り分けが効くため、重複のまま残している。
     cols = list(left_text.columns)
     total = len(left_text)
 
@@ -1121,12 +1137,16 @@ class VerifyResult:
 
     @property
     def is_order_match(self) -> bool:
-        """並び順が一致していると確認できた場合のみTrueを返す。
+        """並び順が一致と判定された場合にTrueを返す。
 
         並び順を比較しなかった場合と、
         行セットが違って判定できなかった場合はFalseになる。
 
-        両方を満たすことを求めるなら、
+        同一キーで両側に値差分がある行は原理的に判定できず、
+        入れ替わっていないと仮定した上での一致になる。
+        その仮定を許さないなら、order.has_ambiguityと組み合わせる。
+
+        値と並び順の両方を求めるなら、
         呼び出し側でis_matchと組み合わせる。
         """
         return (
