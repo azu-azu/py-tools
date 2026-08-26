@@ -810,6 +810,80 @@ def _compare_order(
     )
 
 
+def _skip_reason_text(
+    only_left: pd.DataFrame,
+    only_right: pd.DataFrame,
+    *,
+    keyed: bool,
+    left_total: int,
+    right_total: int,
+) -> str:
+    """行の並び順を判定できなかった理由を、件数つきで組み立てる。
+
+    並び順の結果は出力の最後に出るため、理由に件数を埋めて
+    上の行差分ブロックまで戻らなくても読めるようにする。
+
+    出すのは観測された事実だけに留める。
+
+    キーが対応しない理由は、文字化け、型の食い違い、前ゼロの脱落、
+    空白、そもそも別データ、といくらでもある。
+    ヒューリスティックで1つに決め打つと、外したときに
+    調査を明後日の方向へ誘導するため、解釈は人間に渡す。
+    """
+    left_n = len(only_left)
+    right_n = len(only_right)
+
+    # キーなしモードは行を対応づける手段がないため、
+    # 値が1セル違うだけの行も、行そのものの欠落や余剰も、
+    # 区別されないまま同じ「片側だけの行」に落ちる。
+    #
+    # どちらが起きたかは判定していないので、
+    # 片方に決め打たず、モードの制約だけを添える。
+    if not keyed:
+        return (
+            "片側だけの行があるため: "
+            f"{LEFT_KEY}のみ{left_n:,}行 / "
+            f"{RIGHT_KEY}のみ{right_n:,}行、"
+            "キーなしモードでは値が1セル違う行も片側だけになる"
+        )
+
+    # 残差ではなく全行が片側だけに落ちている状態
+    #
+    # キー列自体が文字化けしているとこうなる。
+    # 片側が空の場合も数式の上では成立してしまうため、
+    # 両側に行があることを条件に入れる。
+    if (
+        left_total > 0
+        and right_total > 0
+        and left_n == left_total
+        and right_n == right_total
+    ):
+        return (
+            "キーが1件も対応していないため: "
+            f"{LEFT_KEY} {left_total:,}行 / "
+            f"{RIGHT_KEY} {right_total:,}行、"
+            "キー列の指定またはencodingを確認"
+        )
+
+    if right_n == 0:
+        return (
+            f"{LEFT_KEY}にしかないキーが"
+            f"{left_n:,}行あるため"
+        )
+
+    if left_n == 0:
+        return (
+            f"{RIGHT_KEY}にしかないキーが"
+            f"{right_n:,}行あるため"
+        )
+
+    return (
+        "キーが対応しない行があるため: "
+        f"{LEFT_KEY}のみ{left_n:,}行 / "
+        f"{RIGHT_KEY}のみ{right_n:,}行"
+    )
+
+
 def _resolve_order(
     left: pd.DataFrame,
     right: pd.DataFrame,
@@ -818,6 +892,7 @@ def _resolve_order(
     left_cols: list[str],
     right_cols: list[str],
     key_dup_rows: int,
+    keyed: bool,
     only_left: pd.DataFrame,
     only_right: pd.DataFrame,
 ) -> OrderResult:
@@ -832,7 +907,13 @@ def _resolve_order(
     """
     if not (only_left.empty and only_right.empty):
         return _skip_order(
-            "行セットが一致していないため",
+            _skip_reason_text(
+                only_left,
+                only_right,
+                keyed=keyed,
+                left_total=len(left),
+                right_total=len(right),
+            ),
             compare_cols,
             left_cols,
             right_cols,
@@ -1114,6 +1195,7 @@ def _verify(
                 left_cols=common_cols,
                 right_cols=right_col_order,
                 key_dup_rows=key_dup_rows,
+                keyed=bool(key_cols),
                 only_left=keyless_left,
                 only_right=keyless_right,
             )
@@ -1311,6 +1393,7 @@ def _verify(
             left_cols=common_cols,
             right_cols=right_col_order,
             key_dup_rows=key_dup_rows,
+            keyed=bool(key_cols),
             only_left=only_left,
             only_right=only_right,
         )
