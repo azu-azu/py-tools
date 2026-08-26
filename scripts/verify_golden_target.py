@@ -737,6 +737,7 @@ def _order_text(
 
 def _order_labels(
     text: pd.DataFrame,
+    cols: list[str],
     positions: np.ndarray,
 ) -> list[str]:
     """サンプル表示用に、行を識別する列の値を1行1文字列へまとめる。
@@ -745,8 +746,9 @@ def _order_labels(
     そのまま並べると1行が横に伸びすぎるため頭で切る。
     """
     labels: list[str] = []
+    values = text[cols].to_numpy()
 
-    for row in text.to_numpy()[positions]:
+    for row in values[positions]:
         label = " | ".join(row)
 
         if len(label) > ORDER_LABEL_WIDTH:
@@ -916,11 +918,17 @@ def _pair_positions(
         exact.loc[forced, "_rrow"].to_numpy()
     )
 
-    # キーなしモードではPass Bを通らないため、ここで落ちた行がそのまま
-    # 曖昧な行になる。キーありモードでは、ここで落ちた行は必ず
-    # Pass Bでも同じキーの残差が2行以上ある側に入り、
-    # もう一度落ちるので、あちらで数える。
+    # Pass Aで採用しなかったペアの数
+    #
+    # キーなしモードではPass Bを通らないため、これがそのまま曖昧な行になる。
+    #
+    # キーありモードでは、ここで落ちた行は必ずPass Bの残差に入り、
+    # 同じキーの残差が2行以上ある側でもう一度落ちる。
+    # 二重に数えないよう、Pass Bの数で置き換える。
     ambiguous_rows = int((~forced).sum())
+
+    if not key_cols:
+        return mapped, ambiguous_rows
 
     # ────────────────────────────────────────────────────────────────
     # Pass B: 残差をキーで対応づけ
@@ -928,75 +936,72 @@ def _pair_positions(
     paired_right = np.zeros(right_total, dtype=bool)
     paired_right[mapped[mapped >= 0]] = True
 
-    rest_left = left.loc[mapped < 0, key_cols + ["_lrow"]] if key_cols else None
-    rest_right = right.loc[~paired_right, key_cols + ["_rrow"]] if key_cols else None
+    rest_left = left.loc[mapped < 0, key_cols + ["_lrow"]].copy()
+    rest_right = right.loc[~paired_right, key_cols + ["_rrow"]].copy()
 
-    if (
-        rest_left is not None
-        and not rest_left.empty
-        and not rest_right.empty
-    ):
-        rest_left = rest_left.copy()
-        rest_right = rest_right.copy()
+    # 片側の残差が空なら対応づけようがない
+    #
+    # Pass Aで落ちた行があれば相手側の行も必ず残るため、
+    # ここへ来る時点でambiguous_rowsは0になっている。
+    if rest_left.empty or rest_right.empty:
+        return mapped, ambiguous_rows
 
-        rest_left["_kseq"] = (
-            rest_left
-            .groupby(key_cols, dropna=False, observed=True)
-            .cumcount()
-        )
-        rest_right["_kseq"] = (
-            rest_right
-            .groupby(key_cols, dropna=False, observed=True)
-            .cumcount()
-        )
+    rest_left["_kseq"] = (
+        rest_left
+        .groupby(key_cols, dropna=False, observed=True)
+        .cumcount()
+    )
+    rest_right["_kseq"] = (
+        rest_right
+        .groupby(key_cols, dropna=False, observed=True)
+        .cumcount()
+    )
 
-        # 同じキーの残差が何行あるかを左右それぞれで持たせる
-        # mergeで両方ともペアの行についてくる
-        rest_left["_lsize"] = (
-            rest_left
-            .groupby(key_cols, dropna=False, observed=True)
-            ["_kseq"]
-            .transform("size")
-        )
-        rest_right["_rsize"] = (
-            rest_right
-            .groupby(key_cols, dropna=False, observed=True)
-            ["_kseq"]
-            .transform("size")
-        )
+    # 同じキーの残差が何行あるかを左右それぞれで持たせる
+    # mergeで両方ともペアの行についてくる
+    rest_left["_lsize"] = (
+        rest_left
+        .groupby(key_cols, dropna=False, observed=True)
+        ["_kseq"]
+        .transform("size")
+    )
+    rest_right["_rsize"] = (
+        rest_right
+        .groupby(key_cols, dropna=False, observed=True)
+        ["_kseq"]
+        .transform("size")
+    )
 
-        keyed_pairs = rest_left.merge(
-            rest_right,
-            how="inner",
-            on=key_cols + ["_kseq"],
-        )
+    keyed_pairs = rest_left.merge(
+        rest_right,
+        how="inner",
+        on=key_cols + ["_kseq"],
+    )
 
-        # 残差の同じキーが左右どちらかで2行以上あるペアは、対応が決まらない
-        #
-        # Pass Bは出現順にペアにするしかない。
-        # 同一キーで両側に値差分があると情報がなく、
-        # 入れ替わったのか値が変わったのか原理的に区別できない。
-        #
-        # 左右どちらも1行なら対応は強制されるので曖昧さはない。
-        # 左右で残差の行数が違いうるので、片側だけを見ると取りこぼす。
-        #
-        # 曖昧なペアは採用せず、除外側へ回す。
-        #
-        # 出現順で結んで「入れ替わっていない」と仮定すると、
-        # Pass Aがどの行を取ったかによって、順序が保たれている場合でも
-        # 交差として現れることがある。判定できないものを
-        # 一致にも不一致にも混ぜないほうが、他の扱いと揃う。
-        resolved = (
-            keyed_pairs[["_lsize", "_rsize"]].max(axis=1) <= 1
-        ).to_numpy()
+    # 残差の同じキーが左右どちらかで2行以上あるペアは、対応が決まらない
+    #
+    # Pass Bは出現順にペアにするしかない。
+    # 同一キーで両側に値差分があると情報がなく、
+    # 入れ替わったのか値が変わったのか原理的に区別できない。
+    #
+    # 左右どちらも1行なら対応は強制されるので曖昧さはない。
+    # 左右で残差の行数が違いうるので、片側だけを見ると取りこぼす。
+    #
+    # 曖昧なペアは採用せず、除外側へ回す。
+    #
+    # 出現順で結んで「入れ替わっていない」と仮定すると、
+    # Pass Aがどの行を取ったかによって、順序が保たれている場合でも
+    # 交差として現れることがある。判定できないものを
+    # 一致にも不一致にも混ぜないほうが、他の扱いと揃う。
+    resolved = (
+        keyed_pairs[["_lsize", "_rsize"]].max(axis=1) <= 1
+    ).to_numpy()
 
-        mapped[keyed_pairs.loc[resolved, "_lrow"].to_numpy()] = (
-            keyed_pairs.loc[resolved, "_rrow"].to_numpy()
-        )
+    mapped[keyed_pairs.loc[resolved, "_lrow"].to_numpy()] = (
+        keyed_pairs.loc[resolved, "_rrow"].to_numpy()
+    )
 
-        ambiguous_rows = int((~resolved).sum())
-
-    return mapped, ambiguous_rows
+    return mapped, int((~resolved).sum())
 
 
 def _skip_order(
@@ -1179,7 +1184,8 @@ def _compare_order(
             f"{LEFT_KEY}行": moved_positions + 1,
             f"{RIGHT_KEY}行": mapped[moved_positions] + 1,
             label_header: _order_labels(
-                left_text[label_cols],
+                left_text,
+                label_cols,
                 moved_positions,
             ),
         }
