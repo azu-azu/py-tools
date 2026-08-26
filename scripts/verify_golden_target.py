@@ -619,6 +619,13 @@ ORDER_SAMPLE_CAP: int = 1000
 # サンプル表示時の1行あたりの文字数上限
 ORDER_LABEL_WIDTH: int = 60
 
+# 「キーが1件も対応していない」と言い切るのに必要な行数
+#
+# 数行のファイルでは、単に別データなだけでも
+# 「1件も対応していない」が数式の上では成立してしまう。
+# 突合そのものが壊れている状態だけを拾いたいので下限を置く。
+ORDER_ALL_UNMATCHED_MIN_ROWS: int = 10
+
 
 @dataclass(frozen=True)
 class OrderResult:
@@ -850,11 +857,20 @@ def _skip_reason_text(
     # 残差ではなく全行が片側だけに落ちている状態
     #
     # キー列自体が文字化けしているとこうなる。
-    # 片側が空の場合も数式の上では成立してしまうため、
-    # 両側に行があることを条件に入れる。
+    #
+    # 行数の下限は、片側が空のファイルや数行しかないファイルが
+    # この分岐へ落ちるのを防ぐ。どちらも数式の上では成立するが、
+    # 突合が壊れている証拠にはならない。
+    #
+    # 小さいほうの行数で見るのは、
+    # golden 1000行 / target 3行のような食い違いを
+    # 「突合が壊れている」ではなく件数の提示へ回すため。
+    #
+    # 外れた場合は下の「キーが対応しない行があるため」へ流れるので、
+    # 件数そのものは失われない。
     if (
-        left_total > 0
-        and right_total > 0
+        min(left_total, right_total)
+        >= ORDER_ALL_UNMATCHED_MIN_ROWS
         and left_n == left_total
         and right_n == right_total
     ):
@@ -1552,6 +1568,9 @@ def _print_order(
 
     if order.key_duplicated:
         print(dup_note)
+
+    # 注記が続いた直後に表が来ると、注記が表の見出しに見える
+    print()
 
     _print_frame(order.samples, max_rows)
 
