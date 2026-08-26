@@ -639,8 +639,8 @@ class OrderResult:
 
     checked: bool
     skip_reason: str
-    compare_cols: list[str]
-    key_dup_rows: int
+    key_cols: list[str]
+    ambiguous_rows: int
     row_total: int
     first_diff: int | None
     diff_count: int
@@ -649,20 +649,16 @@ class OrderResult:
     right_cols: list[str]
 
     @property
-    def key_duplicated(self) -> bool:
-        """比較に使ったキー列に重複がある場合はTrueを返す。
-
-        重複がある場合、同一キー内での行の入れ替わりは検出できない。
-        row_matchがTrueでも「確認できた範囲では一致」の意味になる。
-        """
-        return self.key_dup_rows > 0
+    def has_ambiguity(self) -> bool:
+        """入れ替わりを判定できない行が残っている場合はTrueを返す。"""
+        return self.ambiguous_rows > 0
 
     @property
     def row_match(self) -> bool:
         """行の並び順が一致していると確認できた場合のみTrueを返す。
 
-        キー列に重複がある場合、同一キー内の入れ替わりは見えないため、
-        Trueでも「キー列で確認できる範囲では一致」に留まる。
+        ambiguous_rowsが0でない場合、その行については
+        「入れ替わっていない」と仮定した上での一致になる。
         """
         return self.checked and self.diff_count == 0
 
@@ -688,7 +684,7 @@ def _order_text(
     _absorb_garbled_rowsは文字化けした行をsignatureでペアにして
     差分から取り除くが、生の値は左右で違ったまま残る。
 
-    そのまま位置比較をすると、吸収したはずの行で
+    そのまま比較すると、吸収したはずの行で
     「並び順が違う」と誤検知するため、ここで同じ土俵に乗せる。
     """
     text = {
@@ -707,9 +703,9 @@ def _order_labels(
     text: pd.DataFrame,
     positions: np.ndarray,
 ) -> list[str]:
-    """サンプル表示用に、比較対象列の値を1行1文字列へまとめる。
+    """サンプル表示用に、行を識別する列の値を1行1文字列へまとめる。
 
-    キーなしモードでは共通列すべてが比較対象になり、
+    キーなしモードでは共通列すべてが識別材料になり、
     そのまま並べると1行が横に伸びすぎるため頭で切る。
     """
     labels: list[str] = []
@@ -725,19 +721,147 @@ def _order_labels(
     return labels
 
 
+def _pair_positions(
+    left_text: pd.DataFrame,
+    right_text: pd.DataFrame,
+    key_cols: list[str],
+) -> tuple[np.ndarray, int]:
+    """左の各行に対応する右の行位置と、対応が一意に決まらない行数を返す。
+
+    Stage 1 / Stage 2 と同じ2段構えを、元の行位置を保ったまま再現する。
+
+    キー列の並びを直接比べる方式では、同じキーが複数行あるときに
+    キー内での入れ替わりが見えない。左右どちらも同じキーが並ぶため、
+    キー列だけを見ると入れ替わっていても一致に見えてしまう。
+
+    そこで「どの行がどの行とペアになったか」を作り、
+    その対応が恒等写像かどうかで並び順を判定する。
+
+    Pass Aは全列一致でペアにする。内容で結ぶため、
+    同じキーが複数行あっても、どれとどれが対応するかを取り違えない。
+
+    Pass Bは残差をキーで対応づける。値が違っても
+    キーさえ対応していれば順序は判定できる。
+
+    ペアリングは必ず全単射になる。
+
+    Pass Aのグルーピングは全列なので、キー列も内容に含まれる。
+    つまりPass Aのペアは必ず同じキーの内側で閉じる。
+    キー群Kについて、左の残差はΣmax(0, L(c) - R(c))、
+    右の残差はΣmax(0, R(c) - L(c))であり、
+    この2つは|L_K| = |R_K|であれば等しい。
+    キーの多重集合が一致していることは、
+    only_left / only_rightが空であることから保証される。
+
+    キーなしモードではPass Bを走らせない。
+    _order_textがGARBLED_COLSへsignatureを当てているため、
+    Pass Aだけで Stage 1 と _absorb_garbled_rows の両方を包含する。
+    signature適用のほうがグルーピングとして粗いので、
+    ペアになる行数は必ず同じか多くなり、残差は空になる。
+
+    対応づかない行が残った場合は-1のまま返す。
+    証明の上では起きないが、起きたときに黙って
+    一致とも不一致とも言わないよう、呼び出し側で判定なしへ倒す。
+    """
+    cols = list(left_text.columns)
+    total = len(left_text)
+
+    left = left_text.reset_index(drop=True)
+    right = right_text.reset_index(drop=True)
+
+    left["_lrow"] = np.arange(total)
+    right["_rrow"] = np.arange(total)
+
+    # ────────────────────────────────────────────────────────────────
+    # Pass A: 全列一致
+
+    left["_cseq"] = (
+        left
+        .groupby(cols, dropna=False, observed=True)
+        .cumcount()
+    )
+    right["_cseq"] = (
+        right
+        .groupby(cols, dropna=False, observed=True)
+        .cumcount()
+    )
+
+    exact = left.merge(
+        right,
+        how="inner",
+        on=cols + ["_cseq"],
+    )
+
+    mapped = np.full(total, -1, dtype=np.int64)
+    mapped[exact["_lrow"].to_numpy()] = exact["_rrow"].to_numpy()
+
+    if not key_cols:
+        return mapped, 0
+
+    # ────────────────────────────────────────────────────────────────
+    # Pass B: 残差をキーで対応づけ
+
+    paired_right = np.zeros(total, dtype=bool)
+    paired_right[mapped[mapped >= 0]] = True
+
+    rest_left = left.loc[mapped < 0, key_cols + ["_lrow"]]
+    rest_right = right.loc[~paired_right, key_cols + ["_rrow"]]
+
+    if rest_left.empty:
+        return mapped, 0
+
+    rest_left = rest_left.copy()
+    rest_right = rest_right.copy()
+
+    rest_left["_kseq"] = (
+        rest_left
+        .groupby(key_cols, dropna=False, observed=True)
+        .cumcount()
+    )
+    rest_right["_kseq"] = (
+        rest_right
+        .groupby(key_cols, dropna=False, observed=True)
+        .cumcount()
+    )
+
+    keyed_pairs = rest_left.merge(
+        rest_right,
+        how="inner",
+        on=key_cols + ["_kseq"],
+    )
+
+    mapped[keyed_pairs["_lrow"].to_numpy()] = (
+        keyed_pairs["_rrow"].to_numpy()
+    )
+
+    # 残差の中で同じキーが2行以上あるものだけが、対応の決まらない行
+    #
+    # Pass Bは出現順にペアにするしかないため、
+    # 「入れ替わっていない」と仮定するのと同じことをしている。
+    # 同一キーで両側に値差分があると情報がなく、原理的に判定できない。
+    #
+    # 残差のキーが1行しかなければ対応は強制されるので曖昧さはない。
+    ambiguous_rows = int(
+        rest_left
+        .duplicated(subset=key_cols, keep=False)
+        .sum()
+    )
+
+    return mapped, ambiguous_rows
+
+
 def _skip_order(
     reason: str,
-    compare_cols: list[str],
+    key_cols: list[str],
     left_cols: list[str],
     right_cols: list[str],
-    key_dup_rows: int,
 ) -> OrderResult:
     """行の並び順を判定しなかった結果を組み立てる。"""
     return OrderResult(
         checked=False,
         skip_reason=reason,
-        compare_cols=list(compare_cols),
-        key_dup_rows=key_dup_rows,
+        key_cols=list(key_cols),
+        ambiguous_rows=0,
         row_total=0,
         first_diff=None,
         diff_count=0,
@@ -750,15 +874,15 @@ def _skip_order(
 def _compare_order(
     left: pd.DataFrame,
     right: pd.DataFrame,
-    compare_cols: list[str],
+    common_cols: list[str],
     *,
+    key_cols: list[str],
     left_cols: list[str],
     right_cols: list[str],
-    key_dup_rows: int,
 ) -> OrderResult:
-    """左右の行を先頭から突き合わせ、位置がズレた箇所を数える。
+    """左右の行をペアにして、元の位置から動いた箇所を数える。
 
-    diff_countは「動いた行数」ではなく「位置がズレた箇所の数」。
+    diff_countは「動いた行数」ではなく「元の位置に居ない行の数」。
 
     1行が先頭から100行目へ移動しただけでも、間の行がすべて
     1つずつ前へ詰まるため、101箇所という数え方になる。
@@ -772,18 +896,30 @@ def _compare_order(
     if len(left) != len(right):
         return _skip_order(
             "行数が一致していないため",
-            compare_cols,
+            key_cols,
             left_cols,
             right_cols,
-            key_dup_rows,
         )
 
-    left_text = _order_text(left, compare_cols)
-    right_text = _order_text(right, compare_cols)
+    left_text = _order_text(left, common_cols)
+    right_text = _order_text(right, common_cols)
 
-    mismatch = (
-        left_text.to_numpy() != right_text.to_numpy()
-    ).any(axis=1)
+    mapped, ambiguous_rows = _pair_positions(
+        left_text,
+        right_text,
+        key_cols,
+    )
+
+    if (mapped < 0).any():
+        return _skip_order(
+            "行の対応づけができなかったため",
+            key_cols,
+            left_cols,
+            right_cols,
+        )
+
+    total = len(left)
+    mismatch = mapped != np.arange(total)
 
     diff_count = int(mismatch.sum())
 
@@ -795,20 +931,28 @@ def _compare_order(
 
     positions = np.flatnonzero(mismatch)[:ORDER_SAMPLE_CAP]
 
+    # 行を識別する列
+    # キーがあればキー列、なければ共通列すべて
+    label_cols = list(key_cols) if key_cols else list(common_cols)
+    label_header = "キー" if key_cols else "内容"
+
     samples = pd.DataFrame(
         {
-            "位置": positions + 1,
-            LEFT_KEY: _order_labels(left_text, positions),
-            RIGHT_KEY: _order_labels(right_text, positions),
+            f"{LEFT_KEY}行": positions + 1,
+            f"{RIGHT_KEY}行": mapped[positions] + 1,
+            label_header: _order_labels(
+                left_text[label_cols],
+                positions,
+            ),
         }
     )
 
     return OrderResult(
         checked=True,
         skip_reason="",
-        compare_cols=list(compare_cols),
-        key_dup_rows=key_dup_rows,
-        row_total=len(left),
+        key_cols=list(key_cols),
+        ambiguous_rows=ambiguous_rows,
+        row_total=total,
         first_diff=first_diff,
         diff_count=diff_count,
         samples=samples,
@@ -903,19 +1047,18 @@ def _skip_reason_text(
 def _resolve_order(
     left: pd.DataFrame,
     right: pd.DataFrame,
-    compare_cols: list[str],
+    common_cols: list[str],
     *,
+    key_cols: list[str],
     left_cols: list[str],
     right_cols: list[str],
-    key_dup_rows: int,
-    keyed: bool,
     only_left: pd.DataFrame,
     only_right: pd.DataFrame,
 ) -> OrderResult:
     """行の集合が一致しているときだけ、行の並び順を比較する。
 
-    片側にしかない行が残っている状態で位置比較をすると、
-    欠落や余剰の位置から後ろがすべてズレて情報にならない。
+    片側にしかない行が残っている状態でペアを作ろうとしても、
+    対応づかない行が出て全単射にならない。
 
     一方でセル差分(cell_diff)は前提条件に含めない。
     キーが対応してさえいれば、値が違っても並び順は正しく判定でき、
@@ -926,23 +1069,22 @@ def _resolve_order(
             _skip_reason_text(
                 only_left,
                 only_right,
-                keyed=keyed,
+                keyed=bool(key_cols),
                 left_total=len(left),
                 right_total=len(right),
             ),
-            compare_cols,
+            key_cols,
             left_cols,
             right_cols,
-            key_dup_rows,
         )
 
     return _compare_order(
         left,
         right,
-        compare_cols,
+        common_cols,
+        key_cols=key_cols,
         left_cols=left_cols,
         right_cols=right_cols,
-        key_dup_rows=key_dup_rows,
     )
 
 
@@ -1085,46 +1227,6 @@ def _verify(
         if col in left_u.columns
     ]
 
-    # 並び順の比較に使う列
-    #
-    # キーありモードはキー列だけでよい。
-    # キーが対応していれば値が違っても順序は判定できるので、
-    # 全列で比べるとセル差分のある行まで「並び順が違う」に化ける。
-    #
-    # キーなしモードは行を識別できる列が他にないため共通列すべてを使う。
-    order_cols = (
-        list(key_cols)
-        if key_cols
-        else list(common_cols)
-    )
-
-    # キー列に重複があると、同一キー内での行の入れ替わりは
-    # order_colsの比較に現れない
-    #
-    #   golden: ID=[1, 1, 2], V=[a, b, c]
-    #   target: ID=[1, 1, 2], V=[b, a, c]
-    #
-    # Stage 1が値差分を吸収し、キー列だけを見ると1,1,2どうしで
-    # 一致するため、実際は入れ替わっているのに「一致」と出る。
-    #
-    # order_colsを共通列すべてへ広げれば見えるようになるが、
-    # 今度はセル差分のある行が「並び順が違う」に化けて、
-    # 値の一致と順序の一致を分けた意味がなくなる。
-    #
-    # そのため判定は変えず、確認できた範囲を表示側で明示する。
-    #
-    # 判定できる場合は左右のキーが同じ多重集合になっているため、
-    # 重複の有無はgolden側だけ見れば足りる。
-    key_dup_rows = (
-        int(
-            left_u
-            .duplicated(subset=key_cols, keep=False)
-            .sum()
-        )
-        if key_cols
-        else 0
-    )
-
     left_u = left_u[common_cols]
     right_u = right_u[common_cols]
 
@@ -1207,11 +1309,10 @@ def _verify(
             _resolve_order(
                 left_u,
                 right_u,
-                order_cols,
+                common_cols,
+                key_cols=key_cols,
                 left_cols=common_cols,
                 right_cols=right_col_order,
-                key_dup_rows=key_dup_rows,
-                keyed=bool(key_cols),
                 only_left=keyless_left,
                 only_right=keyless_right,
             )
@@ -1405,11 +1506,10 @@ def _verify(
         _resolve_order(
             left_u,
             right_u,
-            order_cols,
+            common_cols,
+            key_cols=key_cols,
             left_cols=common_cols,
             right_cols=right_col_order,
-            key_dup_rows=key_dup_rows,
-            keyed=bool(key_cols),
             only_left=only_left,
             only_right=only_right,
         )
@@ -1530,12 +1630,12 @@ def _print_order(
         )
         return
 
-    # キー列に重複があると同一キー内の入れ替わりが見えないため、
-    # 「一致」と言い切らず、確認できた範囲を添える
-    dup_note = (
-        "  ※ キー列に重複あり "
-        f"({order.key_dup_rows:,}行)。"
-        "同一キー内の入れ替わりは検出できない"
+    # 対応が一意に決まらなかった行は、入れ替わっていないと仮定して
+    # ペアにしている。「一致」と言い切らず、その範囲を添える
+    ambiguous_note = (
+        "  ※ 同一キーで両側に値差分のある行が "
+        f"{order.ambiguous_rows:,}行。"
+        "この範囲の入れ替わりは判定できない"
     )
 
     if order.diff_count == 0:
@@ -1544,8 +1644,8 @@ def _print_order(
             f"({order.row_total:,}行)"
         )
 
-        if order.key_duplicated:
-            print(dup_note)
+        if order.has_ambiguity:
+            print(ambiguous_note)
 
         return
 
@@ -1562,12 +1662,16 @@ def _print_order(
         "動いた行数ではない"
     )
     print(
-        "  ※ 比較列: "
-        + ", ".join(order.compare_cols)
+        "  ※ 対応づけ: 全列一致"
+        + (
+            " → キー一致 (" + ", ".join(order.key_cols) + ")"
+            if order.key_cols
+            else ""
+        )
     )
 
-    if order.key_duplicated:
-        print(dup_note)
+    if order.has_ambiguity:
+        print(ambiguous_note)
 
     # 注記が続いた直後に表が来ると、注記が表の見出しに見える
     print()
