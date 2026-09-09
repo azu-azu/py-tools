@@ -94,6 +94,9 @@ def _read_csv(path: Path, label: str) -> pd.DataFrame:
             # 同じ列にintとstrが混ざったobject列ができることがある。
             # どこで型が割れるかは行数まかせで左右非対称になるので、
             # 列全体で1回だけ推論させる。
+            #
+            # 列全体を保持する分ピークメモリは増えるが、
+            # 突合では型のブレを消すほうを優先する。
             df = pd.read_csv(path, encoding=encoding, low_memory=False)
         except (UnicodeDecodeError, LookupError):
             print(f"⚠️ {label}: encoding={encoding} NG")
