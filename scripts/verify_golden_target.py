@@ -90,7 +90,11 @@ def _read_csv(path: Path, label: str) -> pd.DataFrame:
     """
     for encoding in DEFAULT_ENCODINGS:
         try:
-            df = pd.read_csv(path, encoding=encoding)
+            # low_memory=Trueだとチャンクごとに型を推論するため、
+            # 同じ列にintとstrが混ざったobject列ができることがある。
+            # どこで型が割れるかは行数まかせで左右非対称になるので、
+            # 列全体で1回だけ推論させる。
+            df = pd.read_csv(path, encoding=encoding, low_memory=False)
         except (UnicodeDecodeError, LookupError):
             print(f"⚠️ {label}: encoding={encoding} NG")
         else:
@@ -108,6 +112,7 @@ def _read_csv(path: Path, label: str) -> pd.DataFrame:
         path,
         encoding=last,
         encoding_errors="replace",
+        low_memory=False,
     )
 
 
@@ -245,8 +250,35 @@ def _normalize(
     normalized = df.copy()
 
     # 文字列カラムの前後空白を除去
+    #
+    # object列は「中身が全部str」とは限らない。
+    # read_csvはチャンク単位で型を推論するため、同じ列の中に
+    # int と str が混ざったobject列ができることがある。
+    #
+    # 混在した列に.str.strip()を列ごと掛けると、str以外のセルは
+    # 値を保たずNaNになる。直後のfillna("")がそれを空文字にするので、
+    # 元の値が丸ごと消えて偽差分になる。
+    # さらに全セルがintのobject列では.strアクセサ自体が
+    # AttributeErrorで落ちる。
+    #
+    # そのためstrのセルだけを個別にstripする。
+    # 純粋な文字列列は従来どおりベクトル化された.str.strip()で処理する。
     for col in _text_cols(normalized):
-        normalized[col] = normalized[col].str.strip()
+        series = normalized[col]
+
+        inferred = pd.api.types.infer_dtype(series, skipna=True)
+
+        if inferred in ("string", "empty"):
+            normalized[col] = series.str.strip()
+            continue
+
+        normalized[col] = series.map(
+            lambda value: (
+                value.strip()
+                if isinstance(value, str)
+                else value
+            )
+        )
 
     # NaNと空文字を統一
     # 数値列まで空文字で埋めるとobject型になり、
