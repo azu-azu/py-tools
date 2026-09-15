@@ -1253,6 +1253,14 @@ class VerifyResult:
     only_left: pd.DataFrame
     only_right: pd.DataFrame
     cell_diff: pd.DataFrame
+
+    # cell_diffが何行ぶんの差分なのか。
+    #
+    # cell_diffはセル単位なので、len(cell_diff)は行数にならない。
+    # 行の対応づけに使う_seqはcell_diffに残さないため、
+    # 行数は_verify側で数えてここに持たせる。
+    cell_diff_rows: int
+
     fuzzy_matched: pd.DataFrame
     only_left_cols: list[str]
     only_right_cols: list[str]
@@ -1532,6 +1540,7 @@ def _verify(
             only_left=keyless_left,
             only_right=keyless_right,
             cell_diff=pd.DataFrame(),
+            cell_diff_rows=0,
             fuzzy_matched=keyless_fuzzy,
             only_left_cols=only_left_cols,
             only_right_cols=only_right_cols,
@@ -1704,7 +1713,14 @@ def _verify(
         else pd.DataFrame()
     )
 
+    # _seqを落とすと同一キーの重複行が1行に潰れるため、
+    # 落とす前に数える
+    cell_diff_rows = 0
+
     if not cell_diff.empty:
+        cell_diff_rows = len(
+            cell_diff[merge_keys].drop_duplicates()
+        )
         cell_diff = cell_diff.drop(columns="_seq")
 
     if not fuzzy_matched.empty:
@@ -1714,6 +1730,7 @@ def _verify(
         only_left=only_left,
         only_right=only_right,
         cell_diff=cell_diff,
+        cell_diff_rows=cell_diff_rows,
         fuzzy_matched=fuzzy_matched,
         only_left_cols=only_left_cols,
         only_right_cols=only_right_cols,
@@ -1993,13 +2010,20 @@ def _print_result(
         _print_frame(subset, max_rows)
 
     # セル差分
+    # cell_diffはセル単位なので「◯件」で数える。
+    # 1行に3列ぶん差分があれば3件になるため、
+    # 行数と読み違えないよう実際の行数も添える。
     mark = mark_ok if result.cell_diff.empty else mark_ng
-    print(
-        f"\n{mark} 両方にあるが値が違う行: "
-        f"{len(result.cell_diff)}行"
-    )
 
-    if not result.cell_diff.empty:
+    if result.cell_diff.empty:
+        print(f"\n{mark} 両方にあるが値が違うセル: 0件")
+    else:
+        print(
+            f"\n{mark} 両方にあるが値が違うセル: "
+            f"{len(result.cell_diff):,}件 "
+            f"({result.cell_diff_rows:,}行)"
+        )
+
         # 明細はtop20までしか出ないため、先に全体像を出す。
         # 明細だけ見ると「この列だけの問題」と早合点しやすい。
         print("\n  = 列ごとの差分件数 =")
