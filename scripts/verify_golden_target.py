@@ -1296,6 +1296,49 @@ class VerifyResult:
             and self.order.is_match
         )
 
+    @property
+    def cell_diff_by_column(self) -> pd.DataFrame:
+        """セル差分を列ごとに集計した件数表を返す。
+
+        columnとcountの2列で、件数の多い順に並べる。
+        同数の列は元の列順のまま残る。
+
+        cell_diffはセル単位なので、1行に3列ぶん差分があれば
+        countも3件と数える。合計はlen(cell_diff)と一致する。
+
+        差分がない場合は空の件数表を返す。
+        """
+        if self.cell_diff.empty:
+            return pd.DataFrame(
+                {
+                    "column": pd.Series(dtype="object"),
+                    "count": pd.Series(dtype="int64"),
+                }
+            )
+
+        # cell_diffは元の列順に積み上げているため、
+        # 登場順がそのまま元の列順になる
+        column_order = self.cell_diff["column"].unique()
+
+        counts = (
+            self.cell_diff["column"]
+            .value_counts()
+            .reindex(column_order)
+            .rename_axis("column")
+            .reset_index(name="count")
+        )
+
+        # 件数の多い順。同数なら元の列順を保つ
+        return (
+            counts
+            .sort_values(
+                "count",
+                ascending=False,
+                kind="stable",
+            )
+            .reset_index(drop=True)
+        )
+
 
 # ────────────────────────────────────────────────────────────────────
 # 突合本体
@@ -1957,6 +2000,17 @@ def _print_result(
     )
 
     if not result.cell_diff.empty:
+        # 明細はtop20までしか出ないため、先に全体像を出す。
+        # 明細だけ見ると「この列だけの問題」と早合点しやすい。
+        print("\n  = 列ごとの差分件数 =")
+        print(
+            result.cell_diff_by_column
+            .to_string(index=False)
+        )
+
+        # 表が2つ続くので、区切りを入れて読み違えを防ぐ
+        print()
+
         _print_frame(result.cell_diff, max_rows)
 
     # 文字化けと思われる差分
