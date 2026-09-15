@@ -1253,6 +1253,14 @@ class VerifyResult:
     only_left: pd.DataFrame
     only_right: pd.DataFrame
     cell_diff: pd.DataFrame
+
+    # cell_diffが何行ぶんの差分なのか。
+    #
+    # cell_diffはセル単位なので、len(cell_diff)は行数にならない。
+    # 行の対応づけに使う_seqはcell_diffに残さないため、
+    # 行数は_verify側で数えてここに持たせる。
+    cell_diff_rows: int
+
     fuzzy_matched: pd.DataFrame
     only_left_cols: list[str]
     only_right_cols: list[str]
@@ -1294,6 +1302,49 @@ class VerifyResult:
         return (
             self.order is not None
             and self.order.is_match
+        )
+
+    @property
+    def cell_diff_by_column(self) -> pd.DataFrame:
+        """セル差分を列ごとに集計した件数表を返す。
+
+        columnとcountの2列で、件数の多い順に並べる。
+        同数の列は元の列順のまま残る。
+
+        cell_diffはセル単位なので、1行に3列ぶん差分があれば
+        countも3件と数える。合計はlen(cell_diff)と一致する。
+
+        差分がない場合は空の件数表を返す。
+        """
+        if self.cell_diff.empty:
+            return pd.DataFrame(
+                {
+                    "column": pd.Series(dtype="object"),
+                    "count": pd.Series(dtype="int64"),
+                }
+            )
+
+        # cell_diffは元の列順に積み上げているため、
+        # 登場順がそのまま元の列順になる
+        column_order = self.cell_diff["column"].unique()
+
+        counts = (
+            self.cell_diff["column"]
+            .value_counts()
+            .reindex(column_order)
+            .rename_axis("column")
+            .reset_index(name="count")
+        )
+
+        # 件数の多い順。同数なら元の列順を保つ
+        return (
+            counts
+            .sort_values(
+                "count",
+                ascending=False,
+                kind="stable",
+            )
+            .reset_index(drop=True)
         )
 
 
@@ -1489,6 +1540,7 @@ def _verify(
             only_left=keyless_left,
             only_right=keyless_right,
             cell_diff=pd.DataFrame(),
+            cell_diff_rows=0,
             fuzzy_matched=keyless_fuzzy,
             only_left_cols=only_left_cols,
             only_right_cols=only_right_cols,
@@ -1661,7 +1713,14 @@ def _verify(
         else pd.DataFrame()
     )
 
+    # _seqを落とすと同一キーの重複行が1行に潰れるため、
+    # 落とす前に数える
+    cell_diff_rows = 0
+
     if not cell_diff.empty:
+        cell_diff_rows = len(
+            cell_diff[merge_keys].drop_duplicates()
+        )
         cell_diff = cell_diff.drop(columns="_seq")
 
     if not fuzzy_matched.empty:
@@ -1671,6 +1730,7 @@ def _verify(
         only_left=only_left,
         only_right=only_right,
         cell_diff=cell_diff,
+        cell_diff_rows=cell_diff_rows,
         fuzzy_matched=fuzzy_matched,
         only_left_cols=only_left_cols,
         only_right_cols=only_right_cols,
@@ -1950,13 +2010,31 @@ def _print_result(
         _print_frame(subset, max_rows)
 
     # セル差分
+    # cell_diffはセル単位なので「◯件」で数える。
+    # 1行に3列ぶん差分があれば3件になるため、
+    # 行数と読み違えないよう実際の行数も添える。
     mark = mark_ok if result.cell_diff.empty else mark_ng
-    print(
-        f"\n{mark} 両方にあるが値が違う行: "
-        f"{len(result.cell_diff)}行"
-    )
 
-    if not result.cell_diff.empty:
+    if result.cell_diff.empty:
+        print(f"\n{mark} 両方にあるが値が違うセル: 0件")
+    else:
+        print(
+            f"\n{mark} 両方にあるが値が違うセル: "
+            f"{len(result.cell_diff):,}件 "
+            f"({result.cell_diff_rows:,}行)"
+        )
+
+        # 明細はtop20までしか出ないため、先に全体像を出す。
+        # 明細だけ見ると「この列だけの問題」と早合点しやすい。
+        print("\n  = 列ごとの差分件数 =")
+        print(
+            result.cell_diff_by_column
+            .to_string(index=False)
+        )
+
+        # 表が2つ続くので、区切りを入れて読み違えを防ぐ
+        print()
+
         _print_frame(result.cell_diff, max_rows)
 
     # 文字化けと思われる差分

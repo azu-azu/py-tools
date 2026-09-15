@@ -44,6 +44,16 @@ def _silently(func, *args, **kwargs):
         return func(*args, **kwargs)
 
 
+def _captured(func, *args, **kwargs) -> str:
+    """printされた内容を文字列として受け取る。"""
+    buffer = io.StringIO()
+
+    with contextlib.redirect_stdout(buffer):
+        func(*args, **kwargs)
+
+    return buffer.getvalue()
+
+
 class NormalizeMixedDtypeTest(unittest.TestCase):
     """_normalizeが混在dtype列を壊さないことを確認する。
 
@@ -208,6 +218,200 @@ class ReadCsvChunkBoundaryTest(unittest.TestCase):
         normalized = vgt._normalize(df, [], sort_rows=False)
 
         self.assertEqual((normalized["Floor"] == "").sum(), 0)
+
+
+class CellDiffByColumnTest(unittest.TestCase):
+    """セル差分の列ごとの件数表を確認する。
+
+    明細はtop20までしか出ないため、差分がどの列に偏っているかは
+    件数表でしか分からない。並びが実行のたびに変わると
+    前回の出力と見比べられないので、並びまで含めて固定する。
+    """
+
+    def _result(self):
+        left = pd.DataFrame(
+            {
+                "ID": ["A", "B", "C"],
+                "name": ["p", "q", "r"],
+                "amount": [1, 2, 3],
+                "memo": ["x", "y", "z"],
+            }
+        )
+        right = left.copy()
+
+        # amount 2件、name 1件、memo 1件
+        right.loc[0, "amount"] = 11
+        right.loc[1, "amount"] = 22
+        right.loc[0, "name"] = "P"
+        right.loc[2, "memo"] = "Z"
+
+        return _silently(
+            vgt._verify,
+            left,
+            right,
+            key_cols=["ID"],
+        )
+
+    def test_counts_sum_matches_cell_diff(self) -> None:
+        result = self._result()
+        counts = result.cell_diff_by_column
+
+        self.assertEqual(
+            list(counts.columns),
+            ["column", "count"],
+        )
+        self.assertEqual(
+            int(counts["count"].sum()),
+            len(result.cell_diff),
+        )
+
+    def test_ties_keep_original_column_order(self) -> None:
+        # nameとmemoは同数。goldenの列順がnameを先に置いているので、
+        # 件数表でもnameが先に来る
+        counts = self._result().cell_diff_by_column
+
+        self.assertEqual(
+            list(counts["column"]),
+            ["amount", "name", "memo"],
+        )
+        self.assertEqual(
+            list(counts["count"]),
+            [2, 1, 1],
+        )
+
+    def test_empty_when_no_diff(self) -> None:
+        left = pd.DataFrame({"ID": ["A"], "x": [1]})
+
+        result = _silently(
+            vgt._verify,
+            left,
+            left.copy(),
+            key_cols=["ID"],
+        )
+        counts = result.cell_diff_by_column
+
+        self.assertTrue(counts.empty)
+        self.assertEqual(
+            list(counts.columns),
+            ["column", "count"],
+        )
+
+
+class CellDiffRowCountTest(unittest.TestCase):
+    """cell_diffのセル数と行数を取り違えないことを確認する。
+
+    cell_diffは1行1セルなので、len(cell_diff)は行数にならない。
+    同一キーの重複行は_seqで対応づけており、その_seqは
+    cell_diffに残らないため、行数は_verifyが数えて持っている。
+    """
+
+    def test_multiple_columns_in_one_row_count_as_one_row(self) -> None:
+        left = pd.DataFrame(
+            {
+                "ID": ["A", "B"],
+                "x": [1, 2],
+                "y": ["p", "q"],
+                "z": [7, 8],
+            }
+        )
+        right = left.copy()
+        right.loc[0, ["x", "y", "z"]] = [9, "Z", 99]
+
+        result = _silently(
+            vgt._verify,
+            left,
+            right,
+            key_cols=["ID"],
+        )
+
+        self.assertEqual(len(result.cell_diff), 3)
+        self.assertEqual(result.cell_diff_rows, 1)
+
+    def test_duplicate_keys_are_counted_separately(self) -> None:
+        # 同一キーが3行。_seqを落としてから数えると1行に潰れる
+        left = pd.DataFrame(
+            {
+                "ID": ["A", "A", "A"],
+                "x": [1, 2, 3],
+            }
+        )
+        right = pd.DataFrame(
+            {
+                "ID": ["A", "A", "A"],
+                "x": [11, 22, 33],
+            }
+        )
+
+        result = _silently(
+            vgt._verify,
+            left,
+            right,
+            key_cols=["ID"],
+        )
+
+        self.assertEqual(len(result.cell_diff), 3)
+        self.assertEqual(result.cell_diff_rows, 3)
+
+    def test_no_diff_has_zero_rows(self) -> None:
+        left = pd.DataFrame({"ID": ["A"], "x": [1]})
+
+        result = _silently(
+            vgt._verify,
+            left,
+            left.copy(),
+            key_cols=["ID"],
+        )
+
+        self.assertEqual(result.cell_diff_rows, 0)
+
+
+class PrintResultCellDiffTest(unittest.TestCase):
+    """セル差分の表示内容を確認する。"""
+
+    def _printed(self, left, right) -> str:
+        result = _silently(
+            vgt._verify,
+            left,
+            right,
+            key_cols=["ID"],
+        )
+
+        return _captured(
+            vgt._print_result,
+            result,
+            key_cols=["ID"],
+            max_rows=20,
+        )
+
+    def test_heading_shows_cells_and_rows(self) -> None:
+        left = pd.DataFrame(
+            {
+                "ID": ["A", "B"],
+                "x": [1, 2],
+                "y": ["p", "q"],
+            }
+        )
+        right = left.copy()
+        right.loc[0, ["x", "y"]] = [9, "Z"]
+
+        printed = self._printed(left, right)
+
+        self.assertIn(
+            "両方にあるが値が違うセル: 2件 (1行)",
+            printed,
+        )
+        self.assertIn("= 列ごとの差分件数 =", printed)
+
+    def test_no_diff_prints_zero_without_counts(self) -> None:
+        left = pd.DataFrame({"ID": ["A"], "x": [1]})
+
+        printed = self._printed(left, left.copy())
+
+        self.assertIn(
+            "両方にあるが値が違うセル: 0件",
+            printed,
+        )
+        self.assertNotIn("= 列ごとの差分件数 =", printed)
 
 
 if __name__ == "__main__":
