@@ -17,6 +17,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -412,6 +413,320 @@ class PrintResultCellDiffTest(unittest.TestCase):
             printed,
         )
         self.assertNotIn("= 列ごとの差分件数 =", printed)
+
+
+def _residual_pair(left_rows, right_rows, columns):
+    """同一キーの残差を作るための小さなDataFrameの組。"""
+    return (
+        pd.DataFrame(left_rows, columns=columns),
+        pd.DataFrame(right_rows, columns=columns),
+    )
+
+
+class PairingAmbiguityTest(unittest.TestCase):
+    """Stage 2の行対応が一意かどうかの診断を確認する。
+
+    Stage 1で全列一致行を吸収した後、同じキーに複数行が残ると、
+    どの行同士を突き合わせるかは一意に決まらない。
+
+    差分そのものは本物である（行として一致する相手は残っていない）。
+    曖昧なのは、その差分をどの列に何件として数えるかのほう。
+    """
+
+    def _ambiguity(self, left, right, keys=("ID",)):
+        result = _silently(
+            vgt._verify,
+            left,
+            right,
+            key_cols=list(keys),
+        )
+
+        return result, result.pairing_ambiguity
+
+    def test_unique_key_has_no_ambiguity(self) -> None:
+        left = pd.DataFrame({"ID": ["A", "B"], "x": [1, 2]})
+        right = pd.DataFrame({"ID": ["A", "B"], "x": [1, 9]})
+
+        result, ambiguity = self._ambiguity(left, right)
+
+        self.assertEqual(len(result.cell_diff), 1)
+        self.assertEqual(ambiguity.ambiguous_cells, 0)
+        self.assertEqual(ambiguity.ambiguous_keys, 0)
+        self.assertEqual(ambiguity.duplicate_key_groups, 0)
+        self.assertFalse(ambiguity.has_ambiguity)
+
+    def test_reordered_rows_leave_no_residual(self) -> None:
+        # Stage 1が順序に依存せず吸収するので、残差自体が生まれない
+        left = pd.DataFrame(
+            {"ID": ["K"] * 3, "x": [1, 2, 3]}
+        )
+        right = left.iloc[[2, 0, 1]].reset_index(drop=True)
+
+        result, ambiguity = self._ambiguity(left, right)
+
+        self.assertTrue(result.is_match)
+        self.assertEqual(ambiguity.duplicate_key_groups, 0)
+        self.assertFalse(ambiguity.has_ambiguity)
+
+    def test_one_to_one_residual_is_unique_pairing(self) -> None:
+        # 同一キーが複数行でも、残差が左右1行ずつなら対応は決まる
+        left = pd.DataFrame(
+            {"ID": ["K", "K"], "x": [1, 2]}
+        )
+        right = pd.DataFrame(
+            {"ID": ["K", "K"], "x": [1, 9]}
+        )
+
+        result, ambiguity = self._ambiguity(left, right)
+
+        self.assertEqual(len(result.cell_diff), 1)
+        self.assertFalse(ambiguity.has_ambiguity)
+        self.assertEqual(ambiguity.duplicate_key_groups, 0)
+
+    def test_two_to_two_residual_is_ambiguous(self) -> None:
+        left, right = _residual_pair(
+            [["K", 1, "P"], ["K", 2, "Q"]],
+            [["K", 1, "Q"], ["K", 2, "P"]],
+            ["ID", "a", "b"],
+        )
+
+        result, ambiguity = self._ambiguity(left, right)
+
+        # 差分は従来どおり保持する
+        self.assertEqual(len(result.cell_diff), 2)
+        self.assertEqual(ambiguity.ambiguous_cells, 2)
+        self.assertEqual(ambiguity.ambiguous_rows, 2)
+        self.assertEqual(ambiguity.ambiguous_keys, 1)
+        self.assertEqual(ambiguity.duplicate_key_groups, 1)
+        self.assertTrue(ambiguity.has_ambiguity)
+        self.assertTrue(ambiguity.has_ambiguous_cell_diff)
+
+    def test_two_to_one_residual_is_ambiguous(self) -> None:
+        # ペアが1組できて1行あぶれる。どの行があぶれるかも対応づけ次第
+        left, right = _residual_pair(
+            [["K", 1, "X"], ["K", 2, "Y"]],
+            [["K", 1, "Z"]],
+            ["ID", "a", "b"],
+        )
+
+        result, ambiguity = self._ambiguity(left, right)
+
+        self.assertEqual(len(result.only_left), 1)
+        self.assertTrue(ambiguity.has_ambiguity)
+        self.assertEqual(ambiguity.ambiguous_keys, 1)
+        self.assertEqual(ambiguity.max_left_rows_per_key, 2)
+        self.assertEqual(ambiguity.max_right_rows_per_key, 1)
+
+    def test_one_sided_residual_is_not_ambiguous(self) -> None:
+        # 片側が0行ならペアが作られない。
+        # 2行ともonly_leftへ行くだけで、対応づけの選択は起きていない
+        left = pd.DataFrame(
+            {"ID": ["K", "K", "J"], "x": [1, 2, 3]}
+        )
+        right = pd.DataFrame({"ID": ["J"], "x": [3]})
+
+        result, ambiguity = self._ambiguity(left, right)
+
+        self.assertEqual(len(result.only_left), 2)
+        self.assertEqual(ambiguity.ambiguous_keys, 0)
+        self.assertFalse(ambiguity.has_ambiguity)
+
+        # キーが行を一意に識別できていないこと自体は伝える
+        self.assertEqual(ambiguity.duplicate_key_groups, 1)
+        self.assertTrue(ambiguity.has_duplicate_keys)
+
+    def test_column_names_change_blame_but_not_diagnosis(self) -> None:
+        """列名を変えるとどの列が差分になるかが変わる。
+
+        Stage 2は共通列名のアルファベット順で残差を並べるため、
+        中身が同じでも列名次第でペアの組み方が変わる。
+
+        診断はその並びに依存してはならない。
+        """
+        blamed = []
+        diagnoses = []
+
+        for first, second in (("a", "z"), ("m", "b")):
+            left, right = _residual_pair(
+                [["K", 1, "P"], ["K", 2, "Q"]],
+                [["K", 1, "Q"], ["K", 2, "P"]],
+                ["ID", first, second],
+            )
+
+            result, ambiguity = self._ambiguity(left, right)
+
+            blamed.append(set(result.cell_diff["column"]))
+            diagnoses.append(ambiguity)
+
+        # 列名を変えただけで、差分として名指しされる列が入れ替わる
+        self.assertEqual(blamed[0], {"z"})
+        self.assertEqual(blamed[1], {"m"})
+
+        # 診断は変わらない
+        self.assertEqual(diagnoses[0], diagnoses[1])
+        self.assertTrue(diagnoses[0].has_ambiguity)
+
+    def test_multiset_match_keeps_the_difference(self) -> None:
+        # 列ごとの値集合は左右で一致するが、行としては別物。
+        # 「入れ替わっただけ」に見えても差分は消さない
+        left, right = _residual_pair(
+            [["K", 10, "A"], ["K", 20, "B"]],
+            [["K", 20, "A"], ["K", 10, "B"]],
+            ["ID", "amount", "memo"],
+        )
+
+        result, ambiguity = self._ambiguity(left, right)
+
+        for col in ("amount", "memo"):
+            self.assertEqual(
+                sorted(left[col]),
+                sorted(right[col]),
+            )
+
+        self.assertFalse(result.is_match)
+        self.assertGreater(len(result.cell_diff), 0)
+        self.assertTrue(ambiguity.has_ambiguity)
+
+    def test_ambiguous_cell_diff_implies_not_match(self) -> None:
+        # 曖昧なキーからセル差分が出ているなら、一致ではありえない
+        left, right = _residual_pair(
+            [["K", 1, "P"], ["K", 2, "Q"]],
+            [["K", 1, "Q"], ["K", 2, "P"]],
+            ["ID", "a", "b"],
+        )
+
+        result, ambiguity = self._ambiguity(left, right)
+
+        self.assertGreater(ambiguity.ambiguous_cells, 0)
+        self.assertTrue(ambiguity.has_ambiguous_cell_diff)
+        self.assertFalse(result.is_match)
+
+    def test_fuzzy_only_ambiguous_pairing_can_still_match(self) -> None:
+        """曖昧さと「一致」は両立する。
+
+        同一キーに2行ずつ残り、対応づけは一意に決まらないが、
+        差分が全て文字化け吸収に救われるとcell_diffは0件になる。
+
+        このときis_matchはTrueだが、その一致は
+        どの行とどの行を突き合わせたか次第で成立している。
+        セル差分の有無でhas_ambiguityを決めると、ここを取り落とす。
+        """
+        left = pd.DataFrame(
+            {"ID": ["K", "K"], "C": ["A1あ", "A2あ"]}
+        )
+        right = pd.DataFrame(
+            {"ID": ["K", "K"], "C": ["A1い", "A2い"]}
+        )
+
+        with mock.patch.object(vgt, "GARBLED_COLS", ["C"]):
+            result, ambiguity = self._ambiguity(left, right)
+
+        self.assertTrue(result.is_match)
+        self.assertTrue(result.cell_diff.empty)
+        self.assertEqual(len(result.fuzzy_matched), 2)
+
+        self.assertEqual(ambiguity.ambiguous_keys, 1)
+        self.assertEqual(ambiguity.ambiguous_cells, 0)
+        self.assertTrue(ambiguity.has_ambiguity)
+        self.assertFalse(ambiguity.has_ambiguous_cell_diff)
+
+    def test_keyless_mode_has_no_diagnosis(self) -> None:
+        # キーなしモードは行を対応づけないので診断対象外
+        left = pd.DataFrame({"ID": ["A", "B"], "x": [1, 2]})
+        right = pd.DataFrame({"ID": ["A", "B"], "x": [1, 9]})
+
+        result, ambiguity = self._ambiguity(left, right, keys=())
+
+        self.assertIsNone(ambiguity)
+        self.assertIsNone(result.pairing_ambiguity)
+
+    def test_garbled_absorption_is_untouched(self) -> None:
+        # 文字化け吸収は従来どおり動き、診断も0のまま
+        left = pd.DataFrame({"ID": ["A"], "C": ["A1あ"]})
+        right = pd.DataFrame({"ID": ["A"], "C": ["A1い"]})
+
+        with mock.patch.object(vgt, "GARBLED_COLS", ["C"]):
+            result, ambiguity = self._ambiguity(left, right)
+
+        self.assertTrue(result.cell_diff.empty)
+        self.assertEqual(len(result.fuzzy_matched), 1)
+
+        # キーが一意なので、そもそも曖昧さは生まれない
+        self.assertFalse(ambiguity.has_ambiguity)
+        self.assertFalse(ambiguity.has_ambiguous_cell_diff)
+
+
+class PrintPairingNotesTest(unittest.TestCase):
+    """曖昧さの注記が、必要なときだけ出ることを確認する。"""
+
+    def _printed(self, left, right, keys=("ID",)) -> str:
+        result = _silently(
+            vgt._verify,
+            left,
+            right,
+            key_cols=list(keys),
+        )
+
+        return _captured(
+            vgt._print_result,
+            result,
+            key_cols=list(keys),
+            max_rows=20,
+        )
+
+    def test_unique_key_prints_no_notes(self) -> None:
+        left = pd.DataFrame({"ID": ["A", "B"], "x": [1, 2]})
+        right = pd.DataFrame({"ID": ["A", "B"], "x": [1, 9]})
+
+        printed = self._printed(left, right)
+
+        self.assertNotIn("行対応が一意でない", printed)
+        self.assertNotIn("同じキーに複数行が残る", printed)
+
+    def test_ambiguous_key_prints_both_notes(self) -> None:
+        left, right = _residual_pair(
+            [["K", 1, "P"], ["K", 2, "Q"]],
+            [["K", 1, "Q"], ["K", 2, "P"]],
+            ["ID", "a", "b"],
+        )
+
+        printed = self._printed(left, right)
+
+        self.assertIn("2件 (2行) は行対応が一意でない", printed)
+        self.assertIn("同じキーに複数行が残る", printed)
+
+    def test_ambiguity_is_never_silent(self) -> None:
+        """一致と出ても、曖昧さがあるなら注記は消えない。
+
+        ambiguousなキーは必ずduplicate_key_groupsにも数えられるため、
+        セル差分が0件でもキー重複の注記が残る。
+        「✅なので読まなくていい」にならないことの担保。
+        """
+        left = pd.DataFrame(
+            {"ID": ["K", "K"], "C": ["A1あ", "A2あ"]}
+        )
+        right = pd.DataFrame(
+            {"ID": ["K", "K"], "C": ["A1い", "A2い"]}
+        )
+
+        with mock.patch.object(vgt, "GARBLED_COLS", ["C"]):
+            printed = self._printed(left, right)
+
+        self.assertIn("値が違うセル: 0件", printed)
+        self.assertIn("同じキーに複数行が残る", printed)
+
+    def test_duplicate_key_note_without_cell_diff(self) -> None:
+        # セル差分が0でも、キーが行を識別できていないことは伝える
+        left = pd.DataFrame(
+            {"ID": ["K", "K", "J"], "x": [1, 2, 3]}
+        )
+        right = pd.DataFrame({"ID": ["J"], "x": [3]})
+
+        printed = self._printed(left, right)
+
+        self.assertIn("値が違うセル: 0件", printed)
+        self.assertIn("同じキーに複数行が残る", printed)
+        self.assertNotIn("行対応が一意でない", printed)
 
 
 if __name__ == "__main__":

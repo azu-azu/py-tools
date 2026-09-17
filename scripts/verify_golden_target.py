@@ -1247,6 +1247,149 @@ def _compare_order(
 # 結果の入れ物
 
 @dataclass(frozen=True)
+class PairingAmbiguity:
+    """Stage 2の行対応が一意に決まらなかった範囲。
+
+    Stage 1で全列一致行を吸収したあと、同じキーに複数行が残ると、
+    どの行とどの行を突き合わせるかは一意に決まらない。
+    現行実装は出現順で決めており、その順序は共通列名の
+    アルファベット順に依存する。業務上の行識別根拠ではない。
+
+    差分そのものは本物である。Stage 1を通り抜けた残差は、
+    左右で行として一致する相手が残っていないため、
+    「対応づけのせいで出た偽の差分」ではない。
+    ここで数えるのは、その差分を「どの列に何件として数えるか」が
+    対応づけ次第で変わりうる範囲であって、差分の真偽ではない。
+
+    曖昧さと「一致」は両立しうる。文字化け吸収が曖昧なペアの
+    セル差分を全部救うと、cell_diffは0件のままis_matchがTrueになり、
+    その一致は対応づけの取り方に依存したものになる。
+    だからhas_ambiguityはキーの数で見て、セル差分の有無では見ない。
+
+    判定規則は_pair_positionsのPass B（並び順比較）と同じ。
+    ただし残差の作り方が違うため、件数が一致するとは限らない。
+
+    - Stage 1: 同じ内容の行を min(左の件数, 右の件数) 組だけ吸収する
+    - Pass A: 内容グループの行数が左右で違えば、そのペアを採らない
+    """
+
+    # 曖昧なキーから出たセル差分の件数と、その行数
+    ambiguous_cells: int
+    ambiguous_rows: int
+
+    # 左右とも残差があり、かつ片側でも2行以上あるキーの数
+    #
+    # 片側が0行のキーはペアが作られず、全行がonly_left /
+    # only_rightへ行くだけなので、対応づけの選択は発生していない
+    ambiguous_keys: int
+
+    # 残差が2行以上あるキーの数（片側だけの重複も数える）
+    # キーが行を一意に識別できていないことの目安
+    duplicate_key_groups: int
+
+    # 1キーあたりの残差行数の最大値
+    # 左右それぞれ別のキーで最大になりうるので、同じキーの組ではない
+    max_left_rows_per_key: int
+    max_right_rows_per_key: int
+
+    @property
+    def has_ambiguity(self) -> bool:
+        """行対応が一意でないキーがある場合はTrueを返す。
+
+        OrderResult.has_ambiguityと同じく、対応づけそのものが
+        決まらない状態を指す。差分として現れたかどうかは見ない。
+        """
+        return self.ambiguous_keys > 0
+
+    @property
+    def has_ambiguous_cell_diff(self) -> bool:
+        """曖昧なキーからセル差分が出た場合はTrueを返す。
+
+        曖昧なペアでも、文字化け吸収で全セルが救われれば
+        セル差分は0件になる。その場合has_ambiguityはTrueのまま、
+        こちらはFalseになる。
+        """
+        return self.ambiguous_cells > 0
+
+    @property
+    def has_duplicate_keys(self) -> bool:
+        """完全一致行を除いた後もキーが重複している場合はTrueを返す。"""
+        return self.duplicate_key_groups > 0
+
+
+def _measure_pairing_ambiguity(
+    key_match: pd.DataFrame,
+    cell_diff: pd.DataFrame,
+    key_cols: list[str],
+) -> PairingAmbiguity:
+    """残差の行対応が一意に決まらない範囲を集計する。
+
+    key_matchは_lsize / _rsizeを持たせた状態で渡す。
+    cell_diffは_seqを落とす前のものを渡す。
+    """
+    empty = PairingAmbiguity(
+        ambiguous_cells=0,
+        ambiguous_rows=0,
+        ambiguous_keys=0,
+        duplicate_key_groups=0,
+        max_left_rows_per_key=0,
+        max_right_rows_per_key=0,
+    )
+
+    if key_match.empty:
+        return empty
+
+    # 同じキーの行はすべて同じ_lsize / _rsizeを持つ。
+    # outer mergeで相手がいない行はNaNになるため、maxで拾う。
+    sizes = (
+        key_match
+        .groupby(key_cols, dropna=False, observed=True)
+        [["_lsize", "_rsize"]]
+        .max()
+        .fillna(0)
+        .astype("int64")
+    )
+
+    if sizes.empty:
+        return empty
+
+    paired = sizes.min(axis=1) >= 1
+    duplicated = sizes.max(axis=1) >= 2
+
+    ambiguous = paired & duplicated
+
+    ambiguous_cells = 0
+    ambiguous_rows = 0
+
+    if ambiguous.any() and not cell_diff.empty:
+        flags = (
+            ambiguous
+            .rename("_ambiguous")
+            .reset_index()
+        )
+
+        marked = cell_diff.merge(flags, on=key_cols, how="left")
+
+        # 相手がいないキーはNaN。eqで拾えばFalseに倒れる
+        mask = marked["_ambiguous"].eq(True).to_numpy()
+
+        ambiguous_cells = int(mask.sum())
+        ambiguous_rows = len(
+            marked.loc[mask, key_cols + ["_seq"]]
+            .drop_duplicates()
+        )
+
+    return PairingAmbiguity(
+        ambiguous_cells=ambiguous_cells,
+        ambiguous_rows=ambiguous_rows,
+        ambiguous_keys=int(ambiguous.sum()),
+        duplicate_key_groups=int(duplicated.sum()),
+        max_left_rows_per_key=int(sizes["_lsize"].max()),
+        max_right_rows_per_key=int(sizes["_rsize"].max()),
+    )
+
+
+@dataclass(frozen=True)
 class VerifyResult:
     """goldenとtargetの突合結果。"""
 
@@ -1264,7 +1407,11 @@ class VerifyResult:
     fuzzy_matched: pd.DataFrame
     only_left_cols: list[str]
     only_right_cols: list[str]
+
+    # 比較しなかった場合はNoneになる診断
+    # order: --no-order / pairing_ambiguity: キーなしモード
     order: OrderResult | None = None
+    pairing_ambiguity: PairingAmbiguity | None = None
 
     @property
     def is_match(self) -> bool:
@@ -1574,11 +1721,33 @@ def _verify(
 
     merge_keys = key_cols + ["_seq"]
 
-    key_match = resid_left[merge_keys].merge(
-        resid_right[merge_keys],
-        how="outer",
-        on=merge_keys,
-        indicator=True,
+    # 同じキーの残差が左右それぞれ何行あるか
+    #
+    # 行対応が一意に決まるかの判定に使う。
+    # resid_left / resid_rightへ列を足すとonly_left / only_rightに
+    # 混ざるため、mergeに渡すフレームにだけ持たせる。
+    left_sizes = (
+        resid_left
+        .groupby(key_cols, dropna=False, observed=True)
+        ["_seq"]
+        .transform("size")
+    )
+    right_sizes = (
+        resid_right
+        .groupby(key_cols, dropna=False, observed=True)
+        ["_seq"]
+        .transform("size")
+    )
+
+    key_match = (
+        resid_left[merge_keys]
+        .assign(_lsize=left_sizes)
+        .merge(
+            resid_right[merge_keys].assign(_rsize=right_sizes),
+            how="outer",
+            on=merge_keys,
+            indicator=True,
+        )
     )
 
     left_only_keys = key_match.loc[
@@ -1713,6 +1882,13 @@ def _verify(
         else pd.DataFrame()
     )
 
+    # どちらも_seqを使うため、落とす前に数える
+    pairing_ambiguity = _measure_pairing_ambiguity(
+        key_match,
+        cell_diff,
+        key_cols,
+    )
+
     # _seqを落とすと同一キーの重複行が1行に潰れるため、
     # 落とす前に数える
     cell_diff_rows = 0
@@ -1735,6 +1911,7 @@ def _verify(
         only_left_cols=only_left_cols,
         only_right_cols=only_right_cols,
         order=order,
+        pairing_ambiguity=pairing_ambiguity,
     )
 
 
@@ -1788,6 +1965,96 @@ def _print_frame(
     shown.index += 1  # 表示の連番を1始まりにする
 
     print(shown.to_string())
+
+
+def _print_pairing_notes(
+    ambiguity: PairingAmbiguity | None,
+) -> None:
+    """行対応の曖昧さについての注記を表示する。
+
+    曖昧さも残差キーの重複もなければ何も出さない。
+    キーが一意な通常の突合では、出力は今までどおりになる。
+    """
+    if ambiguity is None:
+        return
+
+    if ambiguity.has_ambiguous_cell_diff:
+        # 「偽差分」ではない。差分は本物で、
+        # どの列に何件と数えるかが対応づけ次第という話
+        print(
+            f"  ※ うち {ambiguity.ambiguous_cells:,}件 "
+            f"({ambiguity.ambiguous_rows:,}行) は行対応が一意でない "
+            f"(該当キー {ambiguity.ambiguous_keys:,}件)"
+        )
+        print(
+            "     同一キーに複数の残差があり、"
+            "どの行と突き合わせるかが決まらない"
+        )
+        print(
+            "     差分の有無ではなく、"
+            "列ごとの件数と片側だけに残る行が対応づけ次第"
+        )
+
+    if ambiguity.has_duplicate_keys:
+        print(
+            "  ※ 完全一致行を除いた後も同じキーに複数行が残る: "
+            f"{ambiguity.duplicate_key_groups:,}キー"
+        )
+        # 左右の最大値は別のキーで立つことがある。
+        # 「同じキーで3対4」と読まれないよう各側と書く
+        print(
+            f"     (各側の最大残差行数 {LEFT_KEY} "
+            f"{ambiguity.max_left_rows_per_key:,}行 / "
+            f"{RIGHT_KEY} "
+            f"{ambiguity.max_right_rows_per_key:,}行)"
+        )
+        print(
+            "     キーが行を一意に識別できていない。"
+            "真の識別子があればキーに加える"
+        )
+
+
+def _print_cell_diff(
+    result: VerifyResult,
+    max_rows: int,
+) -> None:
+    """セル差分の件数・曖昧さの注記・列別内訳・明細を表示する。"""
+    mark_ok = "✅"
+    mark_ng = "⚠️"
+
+    # cell_diffはセル単位なので「◯件」で数える。
+    # 1行に3列ぶん差分があれば3件になるため、
+    # 行数と読み違えないよう実際の行数も添える。
+    mark = mark_ok if result.cell_diff.empty else mark_ng
+
+    if result.cell_diff.empty:
+        print(f"\n{mark} 両方にあるが値が違うセル: 0件")
+
+        # セル差分が0でも、残差キーが重複していれば
+        # 行差分の側が対応づけ依存になっている
+        _print_pairing_notes(result.pairing_ambiguity)
+        return
+
+    print(
+        f"\n{mark} 両方にあるが値が違うセル: "
+        f"{len(result.cell_diff):,}件 "
+        f"({result.cell_diff_rows:,}行)"
+    )
+
+    _print_pairing_notes(result.pairing_ambiguity)
+
+    # 明細はtop20までしか出ないため、先に全体像を出す。
+    # 明細だけ見ると「この列だけの問題」と早合点しやすい。
+    print("\n  = 列ごとの差分件数 =")
+    print(
+        result.cell_diff_by_column
+        .to_string(index=False)
+    )
+
+    # 表が2つ続くので、区切りを入れて読み違えを防ぐ
+    print()
+
+    _print_frame(result.cell_diff, max_rows)
 
 
 def _print_order(
@@ -2010,32 +2277,7 @@ def _print_result(
         _print_frame(subset, max_rows)
 
     # セル差分
-    # cell_diffはセル単位なので「◯件」で数える。
-    # 1行に3列ぶん差分があれば3件になるため、
-    # 行数と読み違えないよう実際の行数も添える。
-    mark = mark_ok if result.cell_diff.empty else mark_ng
-
-    if result.cell_diff.empty:
-        print(f"\n{mark} 両方にあるが値が違うセル: 0件")
-    else:
-        print(
-            f"\n{mark} 両方にあるが値が違うセル: "
-            f"{len(result.cell_diff):,}件 "
-            f"({result.cell_diff_rows:,}行)"
-        )
-
-        # 明細はtop20までしか出ないため、先に全体像を出す。
-        # 明細だけ見ると「この列だけの問題」と早合点しやすい。
-        print("\n  = 列ごとの差分件数 =")
-        print(
-            result.cell_diff_by_column
-            .to_string(index=False)
-        )
-
-        # 表が2つ続くので、区切りを入れて読み違えを防ぐ
-        print()
-
-        _print_frame(result.cell_diff, max_rows)
+    _print_cell_diff(result, max_rows)
 
     # 文字化けと思われる差分
     unique_pairs = pd.DataFrame()
