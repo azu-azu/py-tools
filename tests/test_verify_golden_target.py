@@ -498,6 +498,8 @@ class PairingAmbiguityTest(unittest.TestCase):
         self.assertEqual(ambiguity.ambiguous_rows, 2)
         self.assertEqual(ambiguity.ambiguous_keys, 1)
         self.assertEqual(ambiguity.duplicate_key_groups, 1)
+        self.assertTrue(ambiguity.has_ambiguity)
+        self.assertTrue(ambiguity.has_ambiguous_cell_diff)
 
     def test_two_to_one_residual_is_ambiguous(self) -> None:
         # ペアが1組できて1行あぶれる。どの行があぶれるかも対応づけ次第
@@ -585,9 +587,8 @@ class PairingAmbiguityTest(unittest.TestCase):
         self.assertGreater(len(result.cell_diff), 0)
         self.assertTrue(ambiguity.has_ambiguity)
 
-    def test_ambiguity_implies_not_match(self) -> None:
-        # 曖昧なキーは必ずcell_diffかonly_*を生む。
-        # 「曖昧だが一致」という状態は存在しない
+    def test_ambiguous_cell_diff_implies_not_match(self) -> None:
+        # 曖昧なキーからセル差分が出ているなら、一致ではありえない
         left, right = _residual_pair(
             [["K", 1, "P"], ["K", 2, "Q"]],
             [["K", 1, "Q"], ["K", 2, "P"]],
@@ -596,8 +597,38 @@ class PairingAmbiguityTest(unittest.TestCase):
 
         result, ambiguity = self._ambiguity(left, right)
 
-        self.assertTrue(ambiguity.has_ambiguity)
+        self.assertGreater(ambiguity.ambiguous_cells, 0)
+        self.assertTrue(ambiguity.has_ambiguous_cell_diff)
         self.assertFalse(result.is_match)
+
+    def test_fuzzy_only_ambiguous_pairing_can_still_match(self) -> None:
+        """曖昧さと「一致」は両立する。
+
+        同一キーに2行ずつ残り、対応づけは一意に決まらないが、
+        差分が全て文字化け吸収に救われるとcell_diffは0件になる。
+
+        このときis_matchはTrueだが、その一致は
+        どの行とどの行を突き合わせたか次第で成立している。
+        セル差分の有無でhas_ambiguityを決めると、ここを取り落とす。
+        """
+        left = pd.DataFrame(
+            {"ID": ["K", "K"], "C": ["A1あ", "A2あ"]}
+        )
+        right = pd.DataFrame(
+            {"ID": ["K", "K"], "C": ["A1い", "A2い"]}
+        )
+
+        with mock.patch.object(vgt, "GARBLED_COLS", ["C"]):
+            result, ambiguity = self._ambiguity(left, right)
+
+        self.assertTrue(result.is_match)
+        self.assertTrue(result.cell_diff.empty)
+        self.assertEqual(len(result.fuzzy_matched), 2)
+
+        self.assertEqual(ambiguity.ambiguous_keys, 1)
+        self.assertEqual(ambiguity.ambiguous_cells, 0)
+        self.assertTrue(ambiguity.has_ambiguity)
+        self.assertFalse(ambiguity.has_ambiguous_cell_diff)
 
     def test_keyless_mode_has_no_diagnosis(self) -> None:
         # キーなしモードは行を対応づけないので診断対象外
@@ -619,7 +650,10 @@ class PairingAmbiguityTest(unittest.TestCase):
 
         self.assertTrue(result.cell_diff.empty)
         self.assertEqual(len(result.fuzzy_matched), 1)
+
+        # キーが一意なので、そもそも曖昧さは生まれない
         self.assertFalse(ambiguity.has_ambiguity)
+        self.assertFalse(ambiguity.has_ambiguous_cell_diff)
 
 
 class PrintPairingNotesTest(unittest.TestCase):
@@ -659,6 +693,26 @@ class PrintPairingNotesTest(unittest.TestCase):
         printed = self._printed(left, right)
 
         self.assertIn("2件 (2行) は行対応が一意でない", printed)
+        self.assertIn("同じキーに複数行が残る", printed)
+
+    def test_ambiguity_is_never_silent(self) -> None:
+        """一致と出ても、曖昧さがあるなら注記は消えない。
+
+        ambiguousなキーは必ずduplicate_key_groupsにも数えられるため、
+        セル差分が0件でもキー重複の注記が残る。
+        「✅なので読まなくていい」にならないことの担保。
+        """
+        left = pd.DataFrame(
+            {"ID": ["K", "K"], "C": ["A1あ", "A2あ"]}
+        )
+        right = pd.DataFrame(
+            {"ID": ["K", "K"], "C": ["A1い", "A2い"]}
+        )
+
+        with mock.patch.object(vgt, "GARBLED_COLS", ["C"]):
+            printed = self._printed(left, right)
+
+        self.assertIn("値が違うセル: 0件", printed)
         self.assertIn("同じキーに複数行が残る", printed)
 
     def test_duplicate_key_note_without_cell_diff(self) -> None:

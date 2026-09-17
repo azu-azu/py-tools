@@ -1261,6 +1261,11 @@ class PairingAmbiguity:
     ここで数えるのは、その差分を「どの列に何件として数えるか」が
     対応づけ次第で変わりうる範囲であって、差分の真偽ではない。
 
+    曖昧さと「一致」は両立しうる。文字化け吸収が曖昧なペアの
+    セル差分を全部救うと、cell_diffは0件のままis_matchがTrueになり、
+    その一致は対応づけの取り方に依存したものになる。
+    だからhas_ambiguityはキーの数で見て、セル差分の有無では見ない。
+
     判定規則は_pair_positionsのPass B（並び順比較）と同じ。
     ただし残差の作り方が違うため、件数が一致するとは限らない。
 
@@ -1282,12 +1287,28 @@ class PairingAmbiguity:
     # キーが行を一意に識別できていないことの目安
     duplicate_key_groups: int
 
+    # 1キーあたりの残差行数の最大値
+    # 左右それぞれ別のキーで最大になりうるので、同じキーの組ではない
     max_left_rows_per_key: int
     max_right_rows_per_key: int
 
     @property
     def has_ambiguity(self) -> bool:
-        """行対応が一意でないセル差分がある場合はTrueを返す。"""
+        """行対応が一意でないキーがある場合はTrueを返す。
+
+        OrderResult.has_ambiguityと同じく、対応づけそのものが
+        決まらない状態を指す。差分として現れたかどうかは見ない。
+        """
+        return self.ambiguous_keys > 0
+
+    @property
+    def has_ambiguous_cell_diff(self) -> bool:
+        """曖昧なキーからセル差分が出た場合はTrueを返す。
+
+        曖昧なペアでも、文字化け吸収で全セルが救われれば
+        セル差分は0件になる。その場合has_ambiguityはTrueのまま、
+        こちらはFalseになる。
+        """
         return self.ambiguous_cells > 0
 
     @property
@@ -1957,7 +1978,7 @@ def _print_pairing_notes(
     if ambiguity is None:
         return
 
-    if ambiguity.has_ambiguity:
+    if ambiguity.has_ambiguous_cell_diff:
         # 「偽差分」ではない。差分は本物で、
         # どの列に何件と数えるかが対応づけ次第という話
         print(
@@ -1979,8 +2000,10 @@ def _print_pairing_notes(
             "  ※ 完全一致行を除いた後も同じキーに複数行が残る: "
             f"{ambiguity.duplicate_key_groups:,}キー"
         )
+        # 左右の最大値は別のキーで立つことがある。
+        # 「同じキーで3対4」と読まれないよう各側と書く
         print(
-            f"     (最大 {LEFT_KEY} "
+            f"     (各側の最大残差行数 {LEFT_KEY} "
             f"{ambiguity.max_left_rows_per_key:,}行 / "
             f"{RIGHT_KEY} "
             f"{ambiguity.max_right_rows_per_key:,}行)"
